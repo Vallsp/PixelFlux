@@ -1,0 +1,49 @@
+# Argo CD Application — GitOps delivery for PixelFlux.
+#
+# Argo CD watches the k8s/ kustomization in this repo and continuously syncs
+# the cluster to match `main`. Apply this once into a cluster that already runs
+# Argo CD (in the `argocd` namespace):
+#
+#   kubectl apply -f argocd/application.yaml
+#
+# From then on, every push to main is rolled out automatically (prune +
+# selfHeal). Everything lands in the `pixelflux` namespace, created on first
+# sync — so use this *instead of* `task deploy` (which applies into the current
+# kubeconfig namespace); run `task deploy:down` first if you already deployed
+# manually, to avoid two copies.
+#
+# IMPORTANT — Argo CD syncs *manifests*, not images. k8s/pixelflux.yaml uses
+# `image: pixelflux:latest` (imagePullPolicy: IfNotPresent), which expects the
+# image to already be on the node. On single-node k3s, import it out of band
+# first with `task deploy:image`. For registry-based GitOps, push the image to
+# GHCR and point k8s/pixelflux.yaml at e.g. ghcr.io/vallsp/pixelflux:0.1.0 with
+# imagePullPolicy: Always.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: pixelflux
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Vallsp/PixelFlux.git
+    targetRevision: main
+    path: k8s
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: pixelflux
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 2m
