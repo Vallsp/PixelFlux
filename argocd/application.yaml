@@ -12,6 +12,11 @@
 # kubeconfig namespace); run `task deploy:down` first if you already deployed
 # manually, to avoid two copies.
 #
+# The Traefik IngressRoute is part of the build; its hostname is set per cluster
+# via the kustomize patch in spec.source.kustomize below — edit the Host(...)
+# value at setup time. The shared k8s/ base keeps the pixelflux.example.com
+# placeholder, so the domain lives only here, in the bootstrap Application.
+#
 # IMPORTANT — Argo CD syncs *manifests*, not images. k8s/pixelflux.yaml uses
 # `image: pixelflux:latest` (imagePullPolicy: IfNotPresent), which expects the
 # image to already be on the node. On single-node k3s, import it out of band
@@ -31,6 +36,17 @@ spec:
     repoURL: https://github.com/Vallsp/PixelFlux.git
     targetRevision: main
     path: k8s
+    # Per-cluster ingress host. Set the Host(...) value below at setup time;
+    # the shared k8s/ base stays domain-agnostic.
+    kustomize:
+      patches:
+        - target:
+            kind: IngressRoute
+            name: pixelflux
+          patch: |-
+            - op: replace
+              path: /spec/routes/0/match
+              value: Host(`pixelflux.example.com`)
   destination:
     server: https://kubernetes.default.svc
     namespace: pixelflux

@@ -4,3 +4,4 @@ resources:
   - redis.yaml
   - pixelflux.yaml
   - hpa.yaml
+  - ingressroute.yaml
