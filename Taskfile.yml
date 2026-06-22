@@ -243,3 +243,10 @@ tasks:
     desc: Remove all deployed resources
     cmds:
       - "{{.KUBECTL}} delete -k k8s/"
+
+  cve:
+    desc: Scan the container image for CVEs (Trivy)
+    deps:
+      - container:load
+    cmds:
+      - trivy image --exit-code 1 --severity HIGH,CRITICAL {{.IMAGE_TAG}}
