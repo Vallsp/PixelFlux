@@ -18,7 +18,7 @@ spec:
   entryPoints:
     - web
   routes:
-    - match: Host(`pixelflux.example.com`)
+    - match: Host(`pixelflux.example.com`) || Host(`www.pixelflux.example.com`)
       kind: Rule
       middlewares:
         - name: pixelflux-redirect
@@ -34,7 +34,7 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: Host(`pixelflux.example.com`)
+    - match: Host(`pixelflux.example.com`) || Host(`www.pixelflux.example.com`)
       kind: Rule
       services:
         - name: pixelflux

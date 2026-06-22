@@ -9,11 +9,15 @@ vars:
     sh: grep '^version' Cargo.toml | head -1 | cut -d'"' -f2
   IMAGE_TAG: "{{.IMAGE_NAME}}:{{.IMAGE_VERSION}}"
   KUBECTL:
+    # Prefer k3s (the image is imported into k3s' containerd), so we target the
+    # same cluster. Override with: task deploy KUBECTL="kubectl"
     sh: |
-      if command -v kubectl >/dev/null 2>&1; then
-        echo kubectl
-      elif command -v k3s >/dev/null 2>&1; then
+      if command -v k3s >/dev/null 2>&1; then
         echo "sudo k3s kubectl"
+      elif [ -x /usr/local/bin/k3s ]; then
+        echo "sudo /usr/local/bin/k3s kubectl"
+      elif command -v kubectl >/dev/null 2>&1; then
+        echo kubectl
       else
         echo "sudo /usr/local/bin/k3s kubectl"
       fi
@@ -201,14 +205,21 @@ tasks:
       - 'echo "HTTPS enabled for {{.DOMAIN}} (TLS certificate issues in ~1 min on first request)."'
 
   deploy:
-    desc: Build, import, and deploy everything (Redis + fronts + Traefik + HPA)
+    desc: Build, import, and deploy the app (Redis + fronts + HPA), then expose it
     deps:
       - deploy:image
     cmds:
       - "{{.KUBECTL}} apply -k k8s/"
-      - task: deploy:ingress
       - "{{.KUBECTL}} rollout status deploy/pixelflux"
-      - "{{.KUBECTL}} get pods,svc,ingressroute,hpa"
+      - "{{.KUBECTL}} get pods,svc,hpa"
+      # Expose the app with EITHER deploy:ingress (HTTP) OR deploy:tls (HTTPS).
+      # They define the same route, so the last one applied wins — don't mix.
+      - 'echo "Expose it -> HTTP:  DOMAIN=you.com task deploy:ingress"'
+      - 'echo "            HTTPS: DOMAIN=you.com ACME_EMAIL=you@you.com task deploy:tls"'
+
+  # NOTE: deploy:ingress (HTTP) and deploy:tls (HTTPS) are mutually exclusive —
+  # each replaces the "pixelflux" route. After enabling TLS, use deploy:restart
+  # (not deploy) for code changes, so the HTTPS route is preserved.
 
   deploy:restart:
     desc: Rebuild the image and restart the deployment (after a code change)

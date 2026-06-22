@@ -1,14 +1,17 @@
 //! Integration test with a real Redis spun up by Testcontainers.
 //! Uses Testcontainers. Requires Docker or Podman.
 
+use pixelflux::{AppState, HEIGHT, WIDTH};
 use testcontainers_modules::redis::Redis;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
-use pixelflux::{AppState, HEIGHT, WIDTH};
 
 #[tokio::test]
 async fn canvas_is_shared_through_redis() {
     // Throwaway Redis container.
-    let node = Redis::default().start().await.expect("start redis container");
+    let node = Redis::default()
+        .start()
+        .await
+        .expect("start redis container");
     let host = node.get_host().await.expect("container host");
     let port = node
         .get_host_port_ipv4(6379)

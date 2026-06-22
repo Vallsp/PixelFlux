@@ -1,7 +1,8 @@
 # Configures the k3s-bundled Traefik with a Let's Encrypt (ACME) resolver
-# named "le", with a persistent store so certificates survive pod restarts
-# (avoids hitting Let's Encrypt rate limits). Applied to the kube-system
-# Traefik via k3s' Helm controller.
+# named "le", using the HTTP-01 challenge on the web entrypoint (port 80) and
+# a persistent store so certificates survive pod restarts (avoids Let's
+# Encrypt rate limits). Applied to the kube-system Traefik via k3s' Helm
+# controller. Replace the email before applying (task deploy:tls does this).
 apiVersion: helm.cattle.io/v1
 kind: HelmChartConfig
 metadata:
@@ -12,12 +13,11 @@ spec:
     persistence:
       enabled: true
       size: 128Mi
-    certificatesResolvers:
-      le:
-        acme:
-          email: admin@example.com
-          storage: /data/acme.json
-          tlsChallenge: {}
+    additionalArguments:
+      - "--certificatesresolvers.le.acme.email=admin@example.com"
+      - "--certificatesresolvers.le.acme.storage=/data/acme.json"
+      - "--certificatesresolvers.le.acme.httpchallenge=true"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
     deployment:
       initContainers:
         - name: volume-permissions

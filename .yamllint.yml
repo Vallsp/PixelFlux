@@ -1,8 +1,19 @@
 extends: default
+
 rules:
+  # Match prettier's YAML output (it pads flow braces/brackets with one space).
+  braces:
+    max-spaces-inside: 1
+  brackets:
+    max-spaces-inside: 1
   line-length: disable
   document-start: disable
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable
   truthy:
     check-keys: false
+
 ignore: |
   target/
+  result

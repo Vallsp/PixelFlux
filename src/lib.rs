@@ -333,7 +333,12 @@ mod tests {
     #[tokio::test]
     async fn health_endpoint_returns_ok() {
         let response = app(AppState::new(None).await)
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);

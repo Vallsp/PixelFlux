@@ -1,6 +1,6 @@
+use pixelflux::{app, AppState};
 use std::net::SocketAddr;
 use tokio::signal;
-use pixelflux::{app, AppState};
 
 #[tokio::main]
 async fn main() {
@@ -29,8 +29,6 @@ async fn main() {
 }
 
 async fn shutdown_signal() {
-    signal::ctrl_c()
-        .await
-        .expect("failed to listen for ctrl+c");
+    signal::ctrl_c().await.expect("failed to listen for ctrl+c");
     tracing::info!("shutting down");
 }
