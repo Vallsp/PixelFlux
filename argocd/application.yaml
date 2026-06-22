@@ -33,7 +33,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/Vallsp/PixelFlux.git
+    repoURL: git@github.com:Vallsp/PixelFlux.git
     targetRevision: main
     path: k8s
     # Per-cluster ingress host. Set the Host(...) value below at setup time;
