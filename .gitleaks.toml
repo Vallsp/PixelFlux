@@ -1,0 +1,5 @@
+# gitleaks config — extends the built-in ruleset.
+title = "pixelflux gitleaks config"
+
+[extend]
+useDefault = true

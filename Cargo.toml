@@ -1,0 +1,36 @@
+[package]
+name = "pixelflux"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.86"
+description = "A collaborative pixel canvas demonstrating a production-grade SDLC pipeline"
+license = "MIT"
+authors = ["Vallsp <valentinlespine@gmail.com>"]
+
+[[bin]]
+name = "pixelflux"
+path = "src/main.rs"
+
+[lib]
+name = "pixelflux"
+path = "src/lib.rs"
+
+[dependencies]
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+testcontainers-modules = { version = "0.11", features = ["redis"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+opt-level = "z"

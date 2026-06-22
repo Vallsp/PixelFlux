@@ -1,0 +1,7 @@
+/target
+result
+result-*
+*.tar
+sbom.json
+.direnv
+.task

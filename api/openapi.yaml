@@ -1,0 +1,115 @@
+openapi: 3.1.0
+info:
+  title: Pixelflux — collaborative pixel canvas API
+  version: 0.1.0
+  description: Collaborative pixel canvas used for the SDLC tooling workshop (TP4).
+  license:
+    name: MIT
+servers:
+  - url: http://localhost:3000
+paths:
+  /:
+    get:
+      summary: Web UI (embedded single page)
+      operationId: getIndex
+      responses:
+        "200":
+          description: HTML page
+          content:
+            text/html:
+              schema:
+                type: string
+  /health:
+    get:
+      summary: Liveness probe
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, example: ok }
+  /info:
+    get:
+      summary: Build information
+      operationId: getInfo
+      responses:
+        "200":
+          description: Name and version of the running binary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, version]
+                properties:
+                  name: { type: string, example: pixelflux }
+                  version: { type: string, example: 0.1.0 }
+  /api/canvas:
+    get:
+      summary: Get the whole canvas
+      operationId: getCanvas
+      responses:
+        "200":
+          description: Canvas dimensions, palette, and pixel data
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [width, height, palette, pixels]
+                properties:
+                  width: { type: integer, example: 64 }
+                  height: { type: integer, example: 64 }
+                  palette:
+                    type: array
+                    items: { type: string }
+                  pixels:
+                    type: string
+                    description: width*height hex chars, one palette index per pixel
+  /api/pixel:
+    post:
+      summary: Paint a single pixel
+      operationId: setPixel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [x, y, color]
+              properties:
+                x: { type: integer, minimum: 0, maximum: 63 }
+                y: { type: integer, minimum: 0, maximum: 63 }
+                color: { type: integer, minimum: 0, maximum: 15 }
+      responses:
+        "200":
+          description: Pixel painted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Invalid coordinates or colour
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: false }
+  /api/events:
+    get:
+      summary: Live pixel updates (Server-Sent Events)
+      operationId: streamEvents
+      responses:
+        "200":
+          description: text/event-stream of painted pixels
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: each event data is {"x":int,"y":int,"color":int}

@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pixelflux — collaborative pixel canvas</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1rem;
+        padding: 1.5rem;
+        font-family: system-ui, sans-serif;
+        background: #0f1115;
+        color: #e6e6e6;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.4rem;
+      }
+      p.sub {
+        margin: 0;
+        color: #9aa0aa;
+        font-size: 0.9rem;
+        text-align: center;
+      }
+      #palette {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        justify-content: center;
+        max-width: 620px;
+      }
+      .swatch {
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        cursor: pointer;
+        border: 2px solid transparent;
+        transition: transform 0.08s;
+      }
+      .swatch.active {
+        border-color: #fff;
+        transform: scale(1.12);
+      }
+      #grid {
+        display: grid;
+        gap: 1px;
+        padding: 1px;
+        background: #2a2f3a;
+        border-radius: 6px;
+        touch-action: none;
+        user-select: none;
+      }
+      .cell {
+        width: 9px;
+        height: 9px;
+        cursor: crosshair;
+      }
+      .cell:hover {
+        outline: 2px solid #ffffffaa;
+        outline-offset: -2px;
+      }
+      footer {
+        color: #6b7280;
+        font-size: 0.8rem;
+      }
+      #status {
+        color: #94e044;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🎨 Pixelflux</h1>
+    <p class="sub">
+      Pick a colour, click or drag on the grid to paint. The canvas is shared
+      with everyone and updates live (SSE + Redis).
+    </p>
+    <div id="palette"></div>
+    <div id="grid"></div>
+    <footer>Pixelflux · Rust + axum · status: <span id="status">connecting…</span></footer>
+
+    <script>
+      const PIXEL = 9;
+      let WIDTH = 64,
+        HEIGHT = 64,
+        PALETTE = [],
+        selected = 5,
+        painting = false,
+        cells = [];
+
+      const grid = document.getElementById("grid");
+      const paletteEl = document.getElementById("palette");
+      const statusEl = document.getElementById("status");
+
+      function buildPalette() {
+        paletteEl.innerHTML = "";
+        PALETTE.forEach((color, i) => {
+          const s = document.createElement("div");
+          s.className = "swatch" + (i === selected ? " active" : "");
+          s.style.background = color;
+          s.title = "#" + i.toString(16);
+          s.onclick = () => {
+            selected = i;
+            document
+              .querySelectorAll(".swatch")
+              .forEach((el, idx) => el.classList.toggle("active", idx === selected));
+          };
+          paletteEl.appendChild(s);
+        });
+      }
+
+      function buildGrid() {
+        grid.style.gridTemplateColumns = `repeat(${WIDTH}, ${PIXEL}px)`;
+        grid.innerHTML = "";
+        cells = [];
+        for (let y = 0; y < HEIGHT; y++) {
+          for (let x = 0; x < WIDTH; x++) {
+            const c = document.createElement("div");
+            c.className = "cell";
+            c.onmousedown = () => {
+              painting = true;
+              paint(x, y);
+            };
+            c.onmouseenter = () => {
+              if (painting) paint(x, y);
+            };
+            grid.appendChild(c);
+            cells.push(c);
+          }
+        }
+      }
+
+      function setCell(i, idx) {
+        if (cells[i]) cells[i].style.background = PALETTE[idx] || PALETTE[0];
+      }
+
+      function render(pixels) {
+        for (let i = 0; i < cells.length; i++) {
+          setCell(i, parseInt(pixels[i], 16) || 0);
+        }
+      }
+
+      async function fullSync() {
+        try {
+          const r = await fetch("/api/canvas");
+          const data = await r.json();
+          WIDTH = data.width;
+          HEIGHT = data.height;
+          PALETTE = data.palette;
+          if (cells.length !== WIDTH * HEIGHT) {
+            buildPalette();
+            buildGrid();
+          }
+          render(data.pixels);
+        } catch (e) {
+          /* keep current view */
+        }
+      }
+
+      async function paint(x, y) {
+        cells[y * WIDTH + x].style.background = PALETTE[selected]; // optimistic
+        await fetch("/api/pixel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ x, y, color: selected }),
+        });
+      }
+
+      function connect() {
+        const es = new EventSource("/api/events");
+        es.onopen = () => {
+          statusEl.textContent = "live";
+          statusEl.style.color = "#94e044";
+        };
+        es.onmessage = (ev) => {
+          const { x, y, color } = JSON.parse(ev.data);
+          setCell(y * WIDTH + x, color);
+        };
+        es.onerror = () => {
+          statusEl.textContent = "reconnecting…";
+          statusEl.style.color = "#e59500";
+          // EventSource auto-reconnects; resync once back.
+        };
+      }
+
+      window.addEventListener("mouseup", () => (painting = false));
+
+      (async function start() {
+        await fullSync();
+        connect();
+        // Safety-net reconciliation (covers multi-instance / missed events).
+        setInterval(fullSync, 10000);
+      })();
+    </script>
+  </body>
+</html>

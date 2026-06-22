@@ -1,0 +1,153 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+# Task runner (go-task). Run `task` with no arguments to list everything.
+
+version: "3"
+
+vars:
+  IMAGE_NAME: pixelflux
+  IMAGE_VERSION:
+    sh: grep '^version' Cargo.toml | head -1 | cut -d'"' -f2
+  IMAGE_TAG: "{{.IMAGE_NAME}}:{{.IMAGE_VERSION}}"
+
+tasks:
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  # --- Setup -------------------------------------------------------------
+  hooks:install:
+    desc: Install git hooks (lefthook)
+    cmds:
+      - lefthook install
+
+  lock:
+    desc: Generate Cargo.lock (run once after cloning, before container build)
+    cmds:
+      - cargo generate-lockfile
+
+  # --- Build & run -------------------------------------------------------
+  build:
+    desc: Compile the project (debug)
+    sources:
+      - ./src/**/*.rs
+      - ./Cargo.*
+    cmds:
+      - cargo build
+
+  build:static:
+    desc: Compile a fully static musl binary
+    sources:
+      - ./src/**/*.rs
+      - ./Cargo.*
+    cmds:
+      - cargo build --release --target x86_64-unknown-linux-musl
+
+  run:
+    desc: Run the server locally (PORT=3000)
+    cmds:
+      - cargo run
+
+  # --- Quality -----------------------------------------------------------
+  fmt:
+    desc: Auto-format every file type (treefmt)
+    cmds:
+      - treefmt
+
+  lint:
+    desc: Run all linters and quality checks (no changes)
+    cmds:
+      - treefmt --fail-on-change
+      - cargo clippy --all-targets --all-features -- -D warnings
+      - yamllint .
+      - actionlint
+      - markdownlint "**/*.md" --ignore target
+
+  check:
+    desc: Full local gate — lint + secrets + tests
+    cmds:
+      - task: lint
+      - task: secrets
+      - task: test
+
+  # --- Tests -------------------------------------------------------------
+  test:
+    desc: Run unit tests
+    cmds:
+      - cargo test --lib
+
+  test:integration:
+    desc: Run integration tests (Testcontainers — needs Docker/Podman)
+    cmds:
+      - cargo test --test integration -- --nocapture
+
+  test:api:
+    desc: API contract tests against a running server (Hurl)
+    cmds:
+      - |
+        cargo build
+        ./target/debug/pixelflux &
+        SERVER_PID=$!
+        trap "kill $SERVER_PID 2>/dev/null" EXIT
+        sleep 1
+        hurl --test --variable host=http://localhost:3000 api/contract.hurl
+
+  bench:
+    desc: Load/benchmark the HTTP server (k6)
+    cmds:
+      - |
+        cargo build --release
+        ./target/release/pixelflux &
+        SERVER_PID=$!
+        trap "kill $SERVER_PID 2>/dev/null" EXIT
+        sleep 1
+        k6 run load/health.js
+
+  # --- Security ----------------------------------------------------------
+  secrets:
+    desc: Scan the codebase for leaked credentials (gitleaks)
+    cmds:
+      - gitleaks detect --no-banner --redact
+
+  # --- Container ---------------------------------------------------------
+  container:
+    desc: Build the distroless image with Nix
+    cmds:
+      - nix build .#container
+
+  container:load:
+    desc: Build and load the image into the local Docker daemon
+    deps:
+      - container
+    cmds:
+      # The Nix image is named pixelflux:latest; retag it with the Cargo version.
+      - docker load < result
+      - docker tag {{.IMAGE_NAME}}:latest {{.IMAGE_TAG}}
+      - 'echo "Loaded {{.IMAGE_TAG}}"'
+
+  container:inspect:
+    desc: Inspect image layers / minimality (dive)
+    deps:
+      - container:load
+    cmds:
+      - dive {{.IMAGE_TAG}}
+
+  container:size:
+    desc: Print image size and fail if it exceeds 20 MB (grading criterion)
+    deps:
+      - container:load
+    cmds:
+      - docker images {{.IMAGE_NAME}}
+      - |
+        BYTES=$(docker image inspect {{.IMAGE_TAG}} --format '{{`{{.Size}}`}}')
+        MB=$((BYTES / 1000000))
+        echo "Image size: ${MB} MB"
+        test "$MB" -lt 20 || { echo "Image exceeds 20 MB!"; exit 1; }
+
+  sbom:
+    desc: Generate an SBOM for the container image (Syft)
+    deps:
+      - container:load
+    cmds:
+      -
