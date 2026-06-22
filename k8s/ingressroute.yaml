@@ -1,0 +1,19 @@
+# Traefik v3 IngressRoute (API group traefik.io/v1alpha1).
+# On k3s, Traefik ships as the default ingress controller.
+# For Traefik v2, change the apiVersion to traefik.containo.us/v1alpha1.
+#
+# SSE (/api/events) works through Traefik out of the box: it streams responses
+# without buffering. With Redis pub/sub, no sticky sessions are required.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: pixelflux
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`pixelflux.example.com`)
+      kind: Rule
+      services:
+        - name: pixelflux
+          port: 80

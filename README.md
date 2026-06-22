@@ -36,6 +36,7 @@ gates, multi-level testing, and continuous integration.
 - [Development](#development)
 - [Testing](#testing)
 - [Container image](#container-image)
+- [Deployment](#deployment)
 - [Continuous integration](#continuous-integration)
 - [Contributing](#contributing)
 - [License](#license)
@@ -46,9 +47,10 @@ gates, multi-level testing, and continuous integration.
   Redis, shared across every server instance. Without a `REDIS_URL` it falls
   back to an in-process canvas, so the app runs with zero external dependencies.
 - **Real-time updates** — painted pixels are pushed to browsers over
-  Server-Sent Events (`/api/events`) through an in-process broadcast channel.
-  No polling and no WebSocket dependency; the browser also performs a full
-  resync every 10 seconds as a safety net.
+  Server-Sent Events (`/api/events`). Across multiple instances, updates are
+  propagated with Redis pub/sub, so every replica behind a load balancer sees
+  every pixel live. No polling and no WebSocket dependency; the browser also
+  performs a full resync every 10 seconds as a safety net.
 - **Single static binary** — the entire web UI (HTML, CSS, JS) is embedded in
   the binary at compile time, so the runtime artifact is just one executable.
 - **Reproducible and minimal** — the dev shell and the container image are both
@@ -108,13 +110,23 @@ nix develop            # or: direnv allow   (auto-loads on cd)
 
 # 2. One-time setup
 task lock              # generate Cargo.lock
-task hooks:install     # install the git hooks
+task hooks:install     # install the git hooks (needs a git repo)
 
 # 3. Run the server
 task run               # then open http://localhost:3000
 ```
 
 Open the page in two browser tabs and paint — pixels appear in both instantly.
+
+For the full **shared and persisted** experience (and to mirror production),
+run a Redis alongside the server:
+
+```bash
+docker run -d --name pixelflux-redis -p 6379:6379 redis:7-alpine
+REDIS_URL=redis://localhost:6379 task run
+```
+
+To run several instances behind a load balancer, see [Deployment](#deployment).
 
 ## Configuration
 
@@ -131,7 +143,7 @@ The server is configured through environment variables:
 | ------ | -------------- | ----------------------------------------------------------- |
 | GET    | `/`            | Web UI (embedded single page).                              |
 | GET    | `/health`      | Liveness probe → `{"status":"ok"}`.                         |
-| GET    | `/info`        | Binary name and version.                                    |
+| GET    | `/info`        | Name, version, and the instance (pod) serving the request.  |
 | GET    | `/api/canvas`  | Whole canvas → `{width, height, palette, pixels}`.          |
 | POST   | `/api/pixel`   | Paint one pixel: `{x, y, color}` → `{ok}` (400 if invalid). |
 | GET    | `/api/events`  | Live pixel stream (Server-Sent Events).                     |
@@ -151,8 +163,10 @@ The full specification is in [`api/openapi.yaml`](api/openapi.yaml).
 └─────────────┘                        └────────────────────────┘
 ```
 
-A painted pixel is written to Redis (`SETRANGE`) and fanned out to every
-connected browser through an in-process broadcast channel exposed as SSE.
+A painted pixel is written to Redis (`SETRANGE`) and published to a pub/sub
+channel; every instance subscribes and fans the update out to its own browsers
+over SSE. This keeps real-time working across all replicas behind the load
+balancer.
 
 ## Development
 
@@ -176,6 +190,7 @@ connected browser through an in-process broadcast channel exposed as SSE.
 ├── load/health.js         # k6 load test
 ├── api/openapi.yaml       # OpenAPI specification
 ├── api/contract.hurl      # Hurl contract tests
+├── k8s/                   # K8s manifests: Redis, app (3+ replicas), Traefik, HPA
 └── .github/workflows/ci.yml
 ```
 
@@ -201,6 +216,13 @@ Run `task` with no arguments to list every task.
 | `task sbom`            | Generate an SBOM (Syft).                             |
 | `task cve`             | Scan the image for CVEs (Trivy).                     |
 | `task ci`              | Run the full pipeline locally.                       |
+| `task deploy`          | Build, import into k3s, apply manifests, and roll out.|
+| `task deploy:restart`  | Rebuild the image and restart the deployment.        |
+| `task deploy:ingress`  | Apply the Traefik route for `$DOMAIN`.               |
+| `task deploy:tls`      | Enable automatic HTTPS (Let's Encrypt) for `$DOMAIN`.|
+| `task deploy:status`   | Show the deployed pods, services, IngressRoute, HPA. |
+| `task deploy:logs`     | Tail logs from all replicas.                         |
+| `task deploy:down`     | Remove all deployed resources.                       |
 
 ### Code quality
 
@@ -244,6 +266,99 @@ task container:size     # verify size budget
 task cve                # scan for vulnerabilities
 docker run --rm -p 3000:3000 pixelflux:0.1.0
 ```
+
+## Deployment
+
+The app is stateless — the canvas lives in Redis — so it scales horizontally:
+run several replicas behind a load balancer and they all serve the same canvas,
+with real-time updates propagated through Redis pub/sub.
+
+On a single-node **k3s** host, the whole thing is one command:
+
+```bash
+task deploy:k3s-install            # once: install k3s (bundles Traefik)
+DOMAIN=pixels.example.com task deploy   # build -> import -> apply -> rollout
+```
+
+`DOMAIN` sets the host Traefik routes (defaults to `pixelflux.example.com`).
+
+After a code change, `task deploy:restart` rebuilds and rolls out. The steps
+below explain what those tasks do (and the registry path for remote clusters).
+
+Manifests for **Kubernetes** with **Traefik** are in [`k8s/`](k8s/):
+
+- `redis.yaml` — a Redis Deployment + Service (shared state and pub/sub).
+- `pixelflux.yaml` — the app Deployment (3 replicas) + Service, running as a
+  non-root user with a read-only root filesystem and `/health` probes.
+- `ingressroute.yaml` — a Traefik `IngressRoute` exposing the Service.
+
+### 1. Make the image available to the cluster
+
+The container is built by Nix for the host architecture (x86_64 or aarch64).
+
+**Single-node k3s (no registry):** import the image straight into k3s.
+
+```bash
+nix build .#container               # produces ./result (an image tarball)
+sudo k3s ctr images import result   # registers pixelflux:latest
+```
+
+**Multi-node / remote cluster:** push to a registry instead.
+
+```bash
+task container:load
+docker tag pixelflux:0.1.0 ghcr.io/vallsp/pixelflux:0.1.0
+docker push ghcr.io/vallsp/pixelflux:0.1.0
+# then set image: ghcr.io/vallsp/pixelflux:0.1.0 (imagePullPolicy: Always)
+```
+
+The host is set automatically from `DOMAIN` by `task deploy` (or `DOMAIN=... task deploy:ingress`); no manual edit needed.
+
+### 2. Deploy
+
+```bash
+kubectl apply -k k8s/
+kubectl rollout status deploy/pixelflux
+```
+
+### 3. Scale the UI
+
+The Deployment runs **3 replicas** by default; Traefik load-balances requests
+across them (round-robin). Scale manually at any time:
+
+```bash
+kubectl scale deploy/pixelflux --replicas=6
+```
+
+Or let it scale automatically with the bundled `HorizontalPodAutoscaler`
+(`k8s/hpa.yaml`, 3–10 replicas at 70% CPU; needs metrics-server, which ships
+with k3s). A `PodDisruptionBudget` keeps at least 2 fronts available during
+rollouts and node drains.
+
+```bash
+kubectl get hpa pixelflux        # watch the replica count adapt to load
+```
+
+Thanks to Redis pub/sub, new replicas join the live canvas immediately and no
+sticky sessions are required. SSE streams pass through Traefik unbuffered out
+of the box.
+
+### 4. Enable HTTPS (optional)
+
+Get automatic Let's Encrypt certificates through Traefik. Point your domain's
+DNS A record at the VPS and open ports 80 and 443, then:
+
+```bash
+DOMAIN=pixels.example.com ACME_EMAIL=you@example.com task deploy:tls
+```
+
+This configures the k3s Traefik with an ACME resolver (certificate persisted
+across restarts) and switches the route to HTTPS with an HTTP-to-HTTPS
+redirect. The certificate is issued on the first request (allow ~1 minute).
+
+> On k3s, Traefik is the default ingress controller and the `IngressRoute` CRD
+> is available out of the box. For production, back Redis with a `StatefulSet`
+> and a `PersistentVolumeClaim` so the canvas survives pod restarts.
 
 ## Continuous integration
 

@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pixelflux
+  labels:
+    app: pixelflux
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pixelflux
+  template:
+    metadata:
+      labels:
+        app: pixelflux
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: pixelflux
+          # Single-node k3s (no registry): build with Nix and import locally
+          #   nix build .#container
+          #   sudo k3s ctr images import result
+          # Multi-node: push to a registry and set image to e.g.
+          #   ghcr.io/vallsp/pixelflux:0.1.0  (with imagePullPolicy: Always)
+          image: pixelflux:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: PORT
+              value: "3000"
+            - name: REDIS_URL
+              value: "redis://redis:6379"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pixelflux
+spec:
+  selector:
+    app: pixelflux
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000

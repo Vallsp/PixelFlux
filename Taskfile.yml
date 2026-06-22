@@ -8,6 +8,15 @@ vars:
   IMAGE_VERSION:
     sh: grep '^version' Cargo.toml | head -1 | cut -d'"' -f2
   IMAGE_TAG: "{{.IMAGE_NAME}}:{{.IMAGE_VERSION}}"
+  KUBECTL:
+    sh: |
+      if command -v kubectl >/dev/null 2>&1; then
+        echo kubectl
+      elif command -v k3s >/dev/null 2>&1; then
+        echo "sudo k3s kubectl"
+      else
+        echo "sudo /usr/local/bin/k3s kubectl"
+      fi
 
 tasks:
   default:
@@ -42,7 +51,7 @@ tasks:
       - ./src/**/*.rs
       - ./Cargo.*
     cmds:
-      - cargo build --release --target x86_64-unknown-linux-musl
+      - cargo build --release --target "$(uname -m)-unknown-linux-musl"
 
   run:
     desc: Run the server locally (PORT=3000)
@@ -151,3 +160,75 @@ tasks:
       - container:load
     cmds:
       -
+
+  # --- Deploy (k3s + Traefik) -------------------------------------------
+  deploy:k3s-install:
+    desc: Install k3s on this host (single-node, bundles Traefik). Run once.
+    cmds:
+      - curl -sfL https://get.k3s.io | sh -
+
+  deploy:image:
+    desc: Build the image with Nix and import it into k3s
+    cmds:
+      - nix build .#container
+      - |
+        K3S="$(command -v k3s || echo /usr/local/bin/k3s)"
+        if [ ! -x "$K3S" ]; then
+          echo "k3s not found — install it first with: task deploy:k3s-install"
+          exit 1
+        fi
+        sudo "$K3S" ctr images import result
+
+  deploy:ingress:
+    desc: Apply the Traefik IngressRoute (set DOMAIN=yourdomain to change the host)
+    vars:
+      DOMAIN:
+        sh: echo "${DOMAIN:-pixelflux.example.com}"
+    cmds:
+      - sed 's/pixelflux\.example\.com/{{.DOMAIN}}/g' k8s/ingressroute.yaml | {{.KUBECTL}} apply -f -
+      - 'echo "IngressRoute host set to {{.DOMAIN}}"'
+
+  deploy:tls:
+    desc: Enable automatic HTTPS (ACME / Let's Encrypt). Set DOMAIN and ACME_EMAIL.
+    vars:
+      DOMAIN:
+        sh: echo "${DOMAIN:-pixelflux.example.com}"
+      ACME_EMAIL:
+        sh: echo "${ACME_EMAIL:-admin@example.com}"
+    cmds:
+      - sed 's/admin@example.com/{{.ACME_EMAIL}}/g' k8s/traefik-acme.yaml | {{.KUBECTL}} apply -f -
+      - sed 's/pixelflux\.example\.com/{{.DOMAIN}}/g' k8s/ingressroute-tls.yaml | {{.KUBECTL}} apply -f -
+      - 'echo "HTTPS enabled for {{.DOMAIN}} (TLS certificate issues in ~1 min on first request)."'
+
+  deploy:
+    desc: Build, import, and deploy everything (Redis + fronts + Traefik + HPA)
+    deps:
+      - deploy:image
+    cmds:
+      - "{{.KUBECTL}} apply -k k8s/"
+      - task: deploy:ingress
+      - "{{.KUBECTL}} rollout status deploy/pixelflux"
+      - "{{.KUBECTL}} get pods,svc,ingressroute,hpa"
+
+  deploy:restart:
+    desc: Rebuild the image and restart the deployment (after a code change)
+    deps:
+      - deploy:image
+    cmds:
+      - "{{.KUBECTL}} rollout restart deploy/pixelflux"
+      - "{{.KUBECTL}} rollout status deploy/pixelflux"
+
+  deploy:status:
+    desc: Show the deployed pixelflux resources
+    cmds:
+      - "{{.KUBECTL}} get pods,svc,ingressroute,hpa -l app=pixelflux"
+
+  deploy:logs:
+    desc: Tail logs from all pixelflux replicas
+    cmds:
+      - "{{.KUBECTL}} logs -l app=pixelflux --prefix -f"
+
+  deploy:down:
+    desc: Remove all deployed resources
+    cmds:
+      - "{{.KUBECTL}} delete -k k8s/"

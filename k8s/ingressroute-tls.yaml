@@ -1,0 +1,43 @@
+# HTTPS for PixelFlux: redirect HTTP to HTTPS and serve TLS with a Let's
+# Encrypt certificate issued automatically by Traefik (certResolver "le").
+# Apply with: DOMAIN=yourdomain ACME_EMAIL=you@domain task deploy:tls
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: pixelflux-redirect
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: pixelflux-web
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`pixelflux.example.com`)
+      kind: Rule
+      middlewares:
+        - name: pixelflux-redirect
+      services:
+        - name: pixelflux
+          port: 80
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: pixelflux
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`pixelflux.example.com`)
+      kind: Rule
+      services:
+        - name: pixelflux
+          port: 80
+  tls:
+    certResolver: le

@@ -87,7 +87,7 @@
     </p>
     <div id="palette"></div>
     <div id="grid"></div>
-    <footer>Pixelflux · Rust + axum · status: <span id="status">connecting…</span></footer>
+    <footer>Pixelflux · status: <span id="status">connecting…</span> · served by <span id="instance">—</span></footer>
 
     <script>
       const PIXEL = 9;
@@ -195,11 +195,25 @@
 
       window.addEventListener("mouseup", () => (painting = false));
 
+      async function refreshInstance() {
+        try {
+          const r = await fetch("/info");
+          const d = await r.json();
+          // Traefik round-robins, so the instance shown changes between calls.
+          document.getElementById("instance").textContent = d.instance;
+        } catch (e) {
+          /* keep last value */
+        }
+      }
+
       (async function start() {
         await fullSync();
         connect();
+        refreshInstance();
         // Safety-net reconciliation (covers multi-instance / missed events).
         setInterval(fullSync, 10000);
+        // Show which replica answers (makes load balancing visible).
+        setInterval(refreshInstance, 3000);
       })();
     </script>
   </body>

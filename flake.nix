@@ -23,11 +23,24 @@
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        muslTarget = "x86_64-unknown-linux-musl";
+        # Pick the musl target matching the host architecture so the
+        # container runs natively (x86_64 or aarch64 / ARM).
+        muslTarget =
+          if pkgs.stdenv.hostPlatform.isAarch64
+          then "aarch64-unknown-linux-musl"
+          else "x86_64-unknown-linux-musl";
+
+        # Keep Cargo sources, plus the embedded web UI (include_str!).
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          name = "source";
+          filter = path: type:
+            (pkgs.lib.hasSuffix ".html" path) || (craneLib.filterCargoSources path type);
+        };
 
         # Arguments shared by dependency and package builds.
         commonArgs = {
-          src = craneLib.cleanCargoSource ./.;
+          inherit src;
           strictDeps = true;
 
           # Fully static binary so the container needs nothing but the binary.

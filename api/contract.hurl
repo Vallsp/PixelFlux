@@ -32,3 +32,10 @@ Content-Type: application/json
 HTTP 400
 [Asserts]
 jsonpath "$.ok" == false
+
+# Info exposes the serving instance (used to visualise load balancing)
+GET {{host}}/info
+HTTP 200
+[Asserts]
+jsonpath "$.name" == "pixelflux"
+jsonpath "$.instance" isString

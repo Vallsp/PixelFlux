@@ -44,10 +44,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, version]
+                required: [name, version, instance]
                 properties:
                   name: { type: string, example: pixelflux }
                   version: { type: string, example: 0.1.0 }
+                  instance: { type: string, example: pixelflux-7d9c8-abcde }
   /api/canvas:
     get:
       summary: Get the whole canvas

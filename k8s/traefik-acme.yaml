@@ -1,0 +1,31 @@
+# Configures the k3s-bundled Traefik with a Let's Encrypt (ACME) resolver
+# named "le", with a persistent store so certificates survive pod restarts
+# (avoids hitting Let's Encrypt rate limits). Applied to the kube-system
+# Traefik via k3s' Helm controller.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    persistence:
+      enabled: true
+      size: 128Mi
+    certificatesResolvers:
+      le:
+        acme:
+          email: admin@example.com
+          storage: /data/acme.json
+          tlsChallenge: {}
+    deployment:
+      initContainers:
+        - name: volume-permissions
+          image: busybox:1.36
+          command: ["sh", "-c", "touch /data/acme.json && chmod 600 /data/acme.json && chown 65532:65532 /data/acme.json"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+          volumeMounts:
+            - name: data
+              mountPath: /data

@@ -8,9 +8,11 @@
 //! across instances and visitors), otherwise in an in-process canvas so the
 //! app still runs with zero dependencies.
 //!
-//! Live updates are pushed to browsers over Server-Sent Events: every painted
-//! pixel is fanned out through an in-process `broadcast` channel to all clients
-//! connected to `/api/events`.
+//! Live updates: every painted pixel is published to a Redis pub/sub channel,
+//! and each instance subscribes to that channel and fans messages out to its
+//! own browsers over Server-Sent Events. This makes real-time work across
+//! every replica behind a load balancer. Without Redis, the broadcast stays
+//! in-process.
 
 use axum::{
     extract::State,
@@ -25,12 +27,14 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, Stream, StreamExt};
 
 pub const WIDTH: usize = 64;
 pub const HEIGHT: usize = 64;
 const CANVAS_KEY: &str = "canvas";
+const EVENTS_CHANNEL: &str = "canvas:events";
 
 /// 16-colour palette (index = hex char stored per pixel).
 pub const PALETTE: [&str; 16] = [
@@ -46,6 +50,29 @@ fn hex_char(color: u8) -> Option<u8> {
     std::char::from_digit(color as u32, 16).map(|c| c as u8)
 }
 
+/// Background task: subscribe to the Redis events channel and forward every
+/// published pixel into the local broadcast channel (which feeds SSE clients).
+/// Reconnects on failure. This is what makes real-time updates work across
+/// multiple instances.
+fn spawn_event_subscriber(client: redis::Client, tx: broadcast::Sender<String>) {
+    tokio::spawn(async move {
+        loop {
+            if let Ok(mut pubsub) = client.get_async_pubsub().await {
+                if pubsub.subscribe(EVENTS_CHANNEL).await.is_ok() {
+                    let mut stream = pubsub.on_message();
+                    while let Some(msg) = stream.next().await {
+                        if let Ok(payload) = msg.get_payload::<String>() {
+                            let _ = tx.send(payload);
+                        }
+                    }
+                }
+            }
+            // Connection dropped or failed: back off, then retry.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
+}
+
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
@@ -58,28 +85,28 @@ impl AppState {
     /// Build the application state.
     ///
     /// If `redis_url` is `Some` and reachable, the canvas is backed by Redis
-    /// (initialised once, atomically, if absent). Any connection error
-    /// degrades gracefully to the in-memory canvas.
+    /// (initialised once, atomically, if absent) and a pub/sub subscriber is
+    /// started for cross-instance live updates. Any connection error degrades
+    /// gracefully to the in-memory canvas with in-process broadcast.
     pub async fn new(redis_url: Option<String>) -> Self {
-        let redis = match redis_url {
-            Some(url) => match redis::Client::open(url) {
-                Ok(client) => redis::aio::ConnectionManager::new(client).await.ok(),
-                Err(_) => None,
-            },
-            None => None,
-        };
-
-        if let Some(conn) = &redis {
-            let mut conn = conn.clone();
-            let blank = String::from_utf8(blank_canvas()).unwrap();
-            let _ = redis::cmd("SETNX")
-                .arg(CANVAS_KEY)
-                .arg(blank)
-                .query_async::<i64>(&mut conn)
-                .await;
-        }
-
         let (tx, _rx) = broadcast::channel(1024);
+
+        let mut redis = None;
+        if let Some(url) = redis_url {
+            if let Ok(client) = redis::Client::open(url) {
+                if let Ok(conn) = redis::aio::ConnectionManager::new(client.clone()).await {
+                    let mut init = conn.clone();
+                    let blank = String::from_utf8(blank_canvas()).unwrap();
+                    let _ = redis::cmd("SETNX")
+                        .arg(CANVAS_KEY)
+                        .arg(blank)
+                        .query_async::<i64>(&mut init)
+                        .await;
+                    spawn_event_subscriber(client, tx.clone());
+                    redis = Some(conn);
+                }
+            }
+        }
 
         Self {
             redis,
@@ -106,35 +133,39 @@ impl AppState {
     }
 
     /// Paint a single pixel. Returns `true` if the coordinates and colour were
-    /// valid and the change was applied (and broadcast to live clients).
+    /// valid and the change was applied. With Redis the update is published to
+    /// every instance; otherwise it is broadcast in-process.
     pub async fn set_pixel(&self, x: usize, y: usize, color: u8) -> bool {
         let ch = match (x < WIDTH, y < HEIGHT, hex_char(color)) {
             (true, true, Some(ch)) => ch,
             _ => return false,
         };
         let offset = y * WIDTH + x;
+        let payload = format!(r#"{{"x":{x},"y":{y},"color":{color}}}"#);
 
-        let mut applied = false;
         if let Some(conn) = &self.redis {
             let mut conn = conn.clone();
-            applied = redis::cmd("SETRANGE")
+            let wrote = redis::cmd("SETRANGE")
                 .arg(CANVAS_KEY)
                 .arg(offset)
                 .arg((ch as char).to_string())
                 .query_async::<i64>(&mut conn)
                 .await
                 .is_ok();
-        }
-        if !applied {
-            self.fallback.lock().unwrap()[offset] = ch;
-            applied = true;
+            if wrote {
+                // Fan out to every instance (including this one via its subscriber).
+                let _ = redis::cmd("PUBLISH")
+                    .arg(EVENTS_CHANNEL)
+                    .arg(&payload)
+                    .query_async::<i64>(&mut conn)
+                    .await;
+                return true;
+            }
         }
 
-        // Fan the update out to every connected browser (ignored if none).
-        let _ = self
-            .tx
-            .send(format!(r#"{{"x":{x},"y":{y},"color":{color}}}"#));
-        applied
+        self.fallback.lock().unwrap()[offset] = ch;
+        let _ = self.tx.send(payload);
+        true
     }
 
     /// A stream of live pixel events for SSE subscribers.
@@ -155,6 +186,22 @@ struct Health {
 struct Info {
     name: &'static str,
     version: &'static str,
+    instance: String,
+}
+
+/// Identify the running instance. In Kubernetes (and Docker) `HOSTNAME` is the
+/// pod / container name, which makes load balancing visible in the UI.
+fn instance_id() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 #[derive(Serialize)]
@@ -189,6 +236,7 @@ async fn info() -> Json<Info> {
     Json(Info {
         name: env!("CARGO_PKG_NAME"),
         version: env!("CARGO_PKG_VERSION"),
+        instance: instance_id(),
     })
 }
 
