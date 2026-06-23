@@ -2,12 +2,18 @@
 # Run with: task links   (or: lychee .)
 no_progress = true
 
-# Don't flag local/dev/placeholder URLs.
+# Treat rate-limit responses as OK (the host is up, just throttling).
+accept = [200, 429]
+
 exclude = [
+  # Local / placeholder URLs.
   "^https?://localhost",
   "^https?://127\\.0\\.0\\.1",
   "example\\.com",
   "your\\.domain\\.com",
+  "ik-clicker\\.com",
+  # This repo is private, so unauthenticated checks 404 on its own links.
+  "github\\.com/Vallsp/[Pp]ixel[Ff]lux",
 ]
 
 # Skip generated/build dirs.
