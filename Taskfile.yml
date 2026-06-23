@@ -275,7 +275,7 @@ tasks:
 
   # --- Local k3d (one command) -------------------------------------------
   k3d:up:
-    desc: One command — k3d + Argo CD + secrets (.env) + the app (GitOps)
+    desc: One command — k3d + Argo CD + the app (GitOps, public repo/image, no secrets)
     cmds:
       - bash cluster/k3d-up.sh
 
