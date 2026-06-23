@@ -31,3 +31,36 @@ async fn canvas_is_shared_through_redis() {
     assert_eq!(canvas.len(), WIDTH * HEIGHT);
     assert_eq!(canvas.as_bytes()[offset], b'a');
 }
+
+#[tokio::test]
+async fn pixel_event_is_fanned_out_across_instances() {
+    let node = Redis::default()
+        .start()
+        .await
+        .expect("start redis container");
+    let host = node.get_host().await.expect("container host");
+    let port = node
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("mapped redis port");
+    let url = format!("redis://{host}:{port}");
+
+    // Two independent instances sharing the same Redis.
+    let painter = AppState::new(Some(url.clone())).await;
+    let watcher = AppState::new(Some(url)).await;
+
+    // Give the watcher's pub/sub subscriber time to connect before we publish
+    // (Redis pub/sub does not buffer messages for late subscribers).
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let mut events = watcher.subscribe();
+
+    // Paint on the *painter* instance.
+    painter.set_pixel(5, 6, 9).await.expect("paint");
+
+    // The *watcher* must receive the event via Redis pub/sub fan-out.
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+        .await
+        .expect("no event received within the timeout")
+        .expect("broadcast channel closed");
+    assert_eq!(msg, r#"{"x":5,"y":6,"color":9}"#);
+}

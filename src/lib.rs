@@ -200,6 +200,12 @@ impl AppState {
         Ok(())
     }
 
+    /// Subscribe to the live pixel event stream (the same feed used by SSE).
+    /// Each message is the JSON payload `{"x":..,"y":..,"color":..}`.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.tx.subscribe()
+    }
+
     /// A stream of live pixel events for SSE subscribers.
     fn events(&self) -> impl Stream<Item = Result<Event, Infallible>> {
         BroadcastStream::new(self.tx.subscribe()).filter_map(|msg| match msg {
