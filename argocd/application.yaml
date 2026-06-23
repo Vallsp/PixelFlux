@@ -42,9 +42,7 @@ spec:
       # Pull the CI-published image from GHCR instead of the base's local
       # `pixelflux:latest`; the shared k8s/ base stays usable for local k3s.
       images:
-        - name: pixelflux
-          newName: ghcr.io/vallsp/pixelflux
-          newTag: "0.1.0"
+        - pixelflux=ghcr.io/vallsp/pixelflux:0.1.0
       patches:
         - target:
             kind: IngressRoute
