@@ -163,7 +163,8 @@ tasks:
     deps:
       - container:load
     cmds:
-      -
+      - syft {{.IMAGE_TAG}} -o spdx-json=sbom.json
+      - 'echo "SBOM written to sbom.json"'
 
   # --- Deploy (k3s + Traefik) -------------------------------------------
   deploy:k3s-install:
