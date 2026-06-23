@@ -237,21 +237,31 @@ sequenceDiagram
 ```
 
 Runs several replicas behind Traefik; the canvas is shared via Redis and
-real-time updates propagate with Redis pub/sub. On a single-node **k3s** host:
+real-time updates propagate with Redis pub/sub. There are two ways to ship it.
+
+### Option A — GitOps with Argo CD (recommended)
+
+Push to `main`, and Argo CD rolls it out for you, in HTTPS. The repo and the GHCR
+image are public, so **no secrets** are needed — the only settings are your domain
+and Let's Encrypt email, in `cluster/config.env`:
+
+```bash
+cp cluster/config.env.example cluster/config.env   # set DOMAIN + ACME_EMAIL
+task k3s:up        # k3s + Argo CD + the app, in HTTPS  (local Docker: task k3d:up)
+```
+
+From then on every `git push` to `main` is deployed automatically; the
+certificate is issued on the first request. Details in
+[`argocd/README.md`](argocd/README.md).
+
+### Option B — manual (imperative)
+
+On a single-node **k3s** host:
 
 ```bash
 task deploy:k3s-install               # once: install k3s + Traefik
 task deploy                           # build, import, apply the app, roll out
-```
-
-Then expose it — pick **one** (each defines the same route):
-
-```bash
-# HTTP
-DOMAIN=your.domain.com task deploy:ingress
-
-# or HTTPS with an automatic Let's Encrypt certificate (needs ports 80 + 443)
-DOMAIN=your.domain.com ACME_EMAIL=you@domain.com task deploy:tls
+DOMAIN=your.domain.com ACME_EMAIL=you@domain.com task deploy:tls   # enable HTTPS
 ```
 
 After enabling HTTPS, use `task deploy:restart` (not `task deploy`) for code

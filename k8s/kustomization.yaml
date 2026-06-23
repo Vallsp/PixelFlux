@@ -4,4 +4,12 @@ resources:
   - redis.yaml
   - pixelflux.yaml
   - hpa.yaml
-  - ingressroute.yaml
+  # HTTPS routing: the HTTP->HTTPS redirect + the TLS route. The host stays the
+  # pixelflux.example.com placeholder here; the real domain is injected per
+  # cluster by the Argo CD Application's kustomize patch (argocd/application.yaml),
+  # which the bring-up script renders from cluster/config.env.
+  # (The cluster-level ACME resolver lives in traefik-acme.yaml and is applied
+  # once by the bring-up script with your email — it is intentionally NOT synced
+  # here, so the email can be a config value rather than committed YAML.)
+  # For a plain HTTP setup instead, swap ingressroute-tls.yaml for ingressroute.yaml.
+  - ingressroute-tls.yaml

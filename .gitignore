@@ -7,4 +7,6 @@ sbom.json
 .task
 docs/book/out
 .env
+# Local deployment config (real domain/email); only config.env.example is committed.
+cluster/config.env
 .claude

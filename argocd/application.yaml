@@ -12,17 +12,16 @@
 # kubeconfig namespace); run `task deploy:down` first if you already deployed
 # manually, to avoid two copies.
 #
-# The Traefik IngressRoute is part of the build; its hostname is set per cluster
-# via the kustomize patch in spec.source.kustomize below — edit the Host(...)
-# value at setup time. The shared k8s/ base keeps the pixelflux.example.com
-# placeholder, so the domain lives only here, in the bootstrap Application.
+# The kustomization deploys HTTPS end-to-end (HTTP->HTTPS redirect + a TLS route
+# with a Let's Encrypt cert, plus the ACME resolver for the k3s Traefik). The
+# hostname is set per cluster via the kustomize patches in spec.source.kustomize
+# below — edit the Host(...) values at setup time. The shared k8s/ base keeps the
+# pixelflux.example.com placeholder, so the domain lives only here.
 #
-# IMPORTANT — Argo CD syncs *manifests*, not images. k8s/pixelflux.yaml uses
-# `image: pixelflux:latest` (imagePullPolicy: IfNotPresent), which expects the
-# image to already be on the node. On single-node k3s, import it out of band
-# first with `task deploy:image`. For registry-based GitOps, push the image to
-# GHCR and point k8s/pixelflux.yaml at e.g. ghcr.io/vallsp/pixelflux:0.1.0 with
-# imagePullPolicy: Always.
+# Argo CD syncs *manifests, not images*. The kustomize `images:` override below
+# points the app at the CI-published image on GHCR. Both the repo and the GHCR
+# package are public, so no git credential and no image pull secret are needed —
+# `task k3s:up` just installs Argo CD and applies this file.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -33,16 +32,20 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: git@github.com:Vallsp/PixelFlux.git
+    # Public repo — cloned over anonymous HTTPS, no deploy key required.
+    repoURL: https://github.com/Vallsp/PixelFlux.git
     targetRevision: main
     path: k8s
-    # Per-cluster ingress host. Set the Host(...) value below at setup time;
-    # the shared k8s/ base stays domain-agnostic.
     kustomize:
       # Pull the CI-published image from GHCR instead of the base's local
       # `pixelflux:latest`; the shared k8s/ base stays usable for local k3s.
       images:
         - pixelflux=ghcr.io/vallsp/pixelflux:0.1.0
+      # Per-cluster ingress host on BOTH routes — the HTTP->HTTPS redirect
+      # (`pixelflux-web`) and the TLS route (`pixelflux`). The pixelflux.example.com
+      # placeholder is replaced with your real DOMAIN at apply time by the bring-up
+      # script (cluster/k3s-up.sh reads cluster/config.env). Edit config.env, not
+      # this file.
       patches:
         - target:
             kind: IngressRoute
@@ -50,7 +53,14 @@ spec:
           patch: |-
             - op: replace
               path: /spec/routes/0/match
-              value: Host(`pixelflux.example.com`)
+              value: Host(`pixelflux.example.com`) || Host(`www.pixelflux.example.com`)
+        - target:
+            kind: IngressRoute
+            name: pixelflux-web
+          patch: |-
+            - op: replace
+              path: /spec/routes/0/match
+              value: Host(`pixelflux.example.com`) || Host(`www.pixelflux.example.com`)
   destination:
     server: https://kubernetes.default.svc
     namespace: pixelflux

@@ -289,6 +289,17 @@ tasks:
     cmds:
       - bash cluster/k3d-down.sh
 
+  # --- Single-node k3s GitOps (VPS, one command) -------------------------
+  k3s:up:
+    desc: One command on a k3s host — k3s + Argo CD + the app (GitOps, HTTPS, no secrets)
+    cmds:
+      - bash cluster/k3s-up.sh
+
+  k3s:down:
+    desc: Remove the Argo CD Application (and its synced resources)
+    cmds:
+      - bash cluster/k3s-down.sh
+
   cve:
     desc: Scan the container image for CVEs (Trivy)
     deps:
