@@ -7,15 +7,15 @@ Traefik), but works on any cluster with the Traefik CRDs.
 
 ## Files
 
-| File                    | Kind(s)                                      | Purpose                                                                                                                                                   |
-| ----------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `redis.yaml`            | Deployment, Service                          | Redis for shared canvas state and pub/sub fan-out. Ephemeral (no PVC).                                                                                    |
-| `pixelflux.yaml`        | Deployment, Service                          | The app: 3 replicas, non-root (uid 65532), read-only root FS, `/health` probes. Service exposes port 80 → 3000.                                           |
-| `hpa.yaml`              | HorizontalPodAutoscaler, PodDisruptionBudget | Autoscale 3→10 at 70% CPU; keep ≥2 fronts available during disruptions.                                                                                   |
-| `ingressroute-tls.yaml` | Middleware, IngressRoute ×2                  | **HTTPS** route: HTTP→HTTPS redirect + TLS route with a Let's Encrypt cert. Host is a placeholder. **In the kustomization.**                              |
+| File                    | Kind(s)                                      | Purpose                                                                                                                                                                                              |
+| ----------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `redis.yaml`            | Deployment, Service                          | Redis for shared canvas state and pub/sub fan-out. Ephemeral (no PVC).                                                                                                                               |
+| `pixelflux.yaml`        | Deployment, Service                          | The app: 3 replicas, non-root (uid 65532), read-only root FS, `/health` probes. Service exposes port 80 → 3000.                                                                                      |
+| `hpa.yaml`              | HorizontalPodAutoscaler, PodDisruptionBudget | Autoscale 3→10 at 70% CPU; keep ≥2 fronts available during disruptions.                                                                                                                              |
+| `ingressroute-tls.yaml` | Middleware, IngressRoute ×2                  | **HTTPS** route: HTTP→HTTPS redirect + TLS route with a Let's Encrypt cert. Host is a placeholder. **In the kustomization.**                                                                         |
 | `traefik-acme.yaml`     | HelmChartConfig                              | Configures the k3s Traefik with a Let's Encrypt (ACME) resolver `le` (HTTP-01, persistent store). Email comes from `config.env`; applied once by the bring-up script — **not** in the kustomization. |
-| `ingressroute.yaml`     | IngressRoute                                 | Plain **HTTP** route (Traefik `web` entrypoint). Not in the kustomization — kept for an HTTP-only setup (`task deploy:ingress`).                          |
-| `kustomization.yaml`    | Kustomization                                | Bundles `redis`, `pixelflux`, `hpa`, and the **HTTPS routing** (`ingressroute-tls`).                                                                     |
+| `ingressroute.yaml`     | IngressRoute                                 | Plain **HTTP** route (Traefik `web` entrypoint). Not in the kustomization — kept for an HTTP-only setup (`task deploy:ingress`).                                                                     |
+| `kustomization.yaml`    | Kustomization                                | Bundles `redis`, `pixelflux`, `hpa`, and the **HTTPS routing** (`ingressroute-tls`).                                                                                                                 |
 
 ## Deploy flow (tasks)
 

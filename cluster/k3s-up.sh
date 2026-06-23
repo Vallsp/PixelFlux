@@ -14,10 +14,12 @@ ARGOCD_REF="${ARGOCD_REF:-stable}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # --- config (DOMAIN, ACME_EMAIL): env vars win, else cluster/config.env ------
-_D="${DOMAIN-}"; _E="${ACME_EMAIL-}"
+_D="${DOMAIN-}"
+_E="${ACME_EMAIL-}"
 # shellcheck source=/dev/null
 [ -f "$REPO_ROOT/cluster/config.env" ] && . "$REPO_ROOT/cluster/config.env"
-DOMAIN="${_D:-${DOMAIN-}}"; ACME_EMAIL="${_E:-${ACME_EMAIL-}}"
+DOMAIN="${_D:-${DOMAIN-}}"
+ACME_EMAIL="${_E:-${ACME_EMAIL-}}"
 : "${DOMAIN:?set DOMAIN in cluster/config.env (copy config.env.example) or the environment}"
 : "${ACME_EMAIL:?set ACME_EMAIL in cluster/config.env or the environment}"
 echo "==> domain=$DOMAIN  acme-email=$ACME_EMAIL"
@@ -49,8 +51,8 @@ echo "==> waiting for the node to be Ready"
 # Cluster-level config, applied directly (not via Argo) so the email stays a
 # config value rather than committed YAML.
 echo "==> configuring Let's Encrypt (ACME) on the cluster Traefik"
-sed "s/admin@example.com/$ACME_EMAIL/" "$REPO_ROOT/k8s/traefik-acme.yaml" \
-  | "${KUBECTL[@]}" apply -f -
+sed "s/admin@example.com/$ACME_EMAIL/" "$REPO_ROOT/k8s/traefik-acme.yaml" |
+  "${KUBECTL[@]}" apply -f -
 
 # --- 3. Argo CD ------------------------------------------------------------
 echo "==> installing Argo CD"
@@ -63,8 +65,8 @@ echo "==> installing Argo CD"
 
 # --- 4. Application (domain rendered into the host patches) -----------------
 echo "==> applying the Argo CD Application (host=$DOMAIN)"
-sed "s/pixelflux\.example\.com/$DOMAIN/g" "$REPO_ROOT/argocd/application.yaml" \
-  | "${KUBECTL[@]}" apply -f -
+sed "s/pixelflux\.example\.com/$DOMAIN/g" "$REPO_ROOT/argocd/application.yaml" |
+  "${KUBECTL[@]}" apply -f -
 "${KUBECTL[@]}" -n argocd annotate application pixelflux \
   argocd.argoproj.io/refresh=hard --overwrite >/dev/null
 

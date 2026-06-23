@@ -15,7 +15,8 @@ ARGOCD_REF="${ARGOCD_REF:-stable}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # --- config: env wins, else config.env, else local defaults ----------------
-_D="${DOMAIN-}"; _E="${ACME_EMAIL-}"
+_D="${DOMAIN-}"
+_E="${ACME_EMAIL-}"
 # shellcheck source=/dev/null
 [ -f "$REPO_ROOT/cluster/config.env" ] && . "$REPO_ROOT/cluster/config.env"
 DOMAIN="${_D:-${DOMAIN:-pixelflux.example.com}}"
@@ -32,8 +33,8 @@ fi
 
 # --- 2. ACME resolver (email from config; no real cert locally) ------------
 echo "==> configuring the ACME resolver on the cluster Traefik"
-sed "s/admin@example.com/$ACME_EMAIL/" "$REPO_ROOT/k8s/traefik-acme.yaml" \
-  | kubectl apply -f -
+sed "s/admin@example.com/$ACME_EMAIL/" "$REPO_ROOT/k8s/traefik-acme.yaml" |
+  kubectl apply -f -
 
 # --- 3. Argo CD ------------------------------------------------------------
 echo "==> installing Argo CD"
@@ -47,8 +48,8 @@ kubectl -n argocd rollout status deploy/argocd-server --timeout=300s
 
 # --- 4. Application (domain rendered into the host patches) -----------------
 echo "==> applying the Argo CD Application (host=$DOMAIN)"
-sed "s/pixelflux\.example\.com/$DOMAIN/g" "$REPO_ROOT/argocd/application.yaml" \
-  | kubectl apply -f -
+sed "s/pixelflux\.example\.com/$DOMAIN/g" "$REPO_ROOT/argocd/application.yaml" |
+  kubectl apply -f -
 kubectl -n argocd annotate application pixelflux \
   argocd.argoproj.io/refresh=hard --overwrite >/dev/null
 
