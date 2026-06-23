@@ -10,7 +10,7 @@ build-dir = "out"
 
 [output.html]
 default-theme = "rust"
-git-repository-url = "https://github.com/Vallsp/pixelflux"
+git-repository-url = "https://github.com/Vallsp/PixelFlux"
 additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
 [preprocessor.mermaid]
