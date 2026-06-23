@@ -6,12 +6,10 @@ Pixelflux is pre-1.0; only the latest `main` is supported. Fixes land on `main`.
 
 ## Reporting a vulnerability
 
-Please **do not** open a public issue for security problems.
-
-- Preferred: open a private report via GitHub
-  ([Security → Report a vulnerability](https://github.com/Vallsp/PixelFlux/security/advisories/new)).
-- Or email the maintainers at <valentinlespine@gmail.com> with the details and,
-  if possible, a minimal reproduction.
+Please **do not** open a public issue for security problems. Instead, open a
+private report via GitHub
+([Security → Report a vulnerability](https://github.com/Vallsp/PixelFlux/security/advisories/new))
+with the details and, if possible, a minimal reproduction.
 
 We aim to acknowledge a report within a few days and to fix confirmed issues on
 `main` as soon as reasonably possible. Please give us a reasonable window to
