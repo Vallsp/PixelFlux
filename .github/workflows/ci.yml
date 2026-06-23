@@ -103,3 +103,16 @@ jobs:
             docker push "$REPO:$TAG"
           done
           echo "Pushed $REPO ($VERSION, $SHA_TAG, latest)"
+
+  docs:
+    name: Documentation (Vale + links)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - name: Prose (Vale)
+        run: nix develop -c task prose
+      - name: Links (lychee)
+        run: nix develop -c task links
+        continue-on-error: true # external links can be flaky

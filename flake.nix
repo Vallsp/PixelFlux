@@ -104,6 +104,8 @@
             pkgs.actionlint
             pkgs.prettier
             pkgs.markdownlint-cli
+            pkgs.vale
+            pkgs.lychee
 
             # Misc utilities
             pkgs.jq

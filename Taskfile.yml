@@ -77,6 +77,22 @@ tasks:
       - actionlint
       - markdownlint "**/*.md" --ignore target
 
+  prose:
+    desc: Lint documentation prose (Vale)
+    cmds:
+      - vale .
+
+  links:
+    desc: Check docs for broken links (lychee)
+    cmds:
+      - lychee .
+
+  docs:lint:
+    desc: All documentation checks (prose + links)
+    cmds:
+      - task: prose
+      - task: links
+
   check:
     desc: Full local gate — lint + secrets + tests
     cmds:
