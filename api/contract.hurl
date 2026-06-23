@@ -32,6 +32,7 @@ Content-Type: application/json
 HTTP 400
 [Asserts]
 jsonpath "$.ok" == false
+jsonpath "$.error" isString
 
 # Info exposes the serving instance (used to visualise load balancing)
 GET {{host}}/info

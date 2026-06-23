@@ -19,7 +19,7 @@ use axum::{
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
-        Html,
+        Html, IntoResponse, Response,
     },
     routing::{get, post},
     Json, Router,
@@ -53,6 +53,20 @@ pub enum PixelError {
     },
     #[error("color {0} is not in the palette (0–15)")]
     InvalidColor(u8),
+}
+
+/// Map a `PixelError` to a 400 response carrying its message.
+impl IntoResponse for PixelError {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                ok: false,
+                error: self.to_string(),
+            }),
+        )
+            .into_response()
+    }
 }
 
 fn blank_canvas() -> Vec<u8> {
@@ -242,6 +256,12 @@ struct PixelResponse {
     ok: bool,
 }
 
+#[derive(Serialize)]
+struct ErrorResponse {
+    ok: bool,
+    error: String,
+}
+
 async fn index() -> Html<&'static str> {
     Html(include_str!("index.html"))
 }
@@ -270,11 +290,9 @@ async fn get_canvas(State(state): State<AppState>) -> Json<CanvasResponse> {
 async fn put_pixel(
     State(state): State<AppState>,
     Json(req): Json<PixelRequest>,
-) -> (StatusCode, Json<PixelResponse>) {
-    match state.set_pixel(req.x, req.y, req.color).await {
-        Ok(()) => (StatusCode::OK, Json(PixelResponse { ok: true })),
-        Err(_) => (StatusCode::BAD_REQUEST, Json(PixelResponse { ok: false })),
-    }
+) -> Result<Json<PixelResponse>, PixelError> {
+    state.set_pixel(req.x, req.y, req.color).await?;
+    Ok(Json(PixelResponse { ok: true }))
 }
 
 async fn sse_events(

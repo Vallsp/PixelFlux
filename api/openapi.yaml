@@ -102,6 +102,9 @@ paths:
                 type: object
                 properties:
                   ok: { type: boolean, example: false }
+                  error:
+                    type: string
+                    example: coordinates (99, 0) out of bounds (64×64)
   /api/events:
     get:
       summary: Live pixel updates (Server-Sent Events)
