@@ -7,15 +7,15 @@ Traefik), but works on any cluster with the Traefik CRDs.
 
 ## Files
 
-| File | Kind(s) | Purpose |
-| --- | --- | --- |
-| `redis.yaml` | Deployment, Service | Redis for shared canvas state and pub/sub fan-out. Ephemeral (no PVC). |
-| `pixelflux.yaml` | Deployment, Service | The app: 3 replicas, non-root (uid 65532), read-only root FS, `/health` probes. Service exposes port 80 → 3000. |
-| `hpa.yaml` | HorizontalPodAutoscaler, PodDisruptionBudget | Autoscale 3→10 at 70% CPU; keep ≥2 fronts available during disruptions. |
-| `ingressroute.yaml` | IngressRoute | **HTTP** route (Traefik `web` entrypoint). Host is a placeholder. Part of the kustomization. |
-| `ingressroute-tls.yaml` | Middleware, IngressRoute ×2 | **HTTPS** route: HTTP→HTTPS redirect + TLS route with a Let's Encrypt cert. Applied separately by `task deploy:tls`. |
-| `traefik-acme.yaml` | HelmChartConfig | Configures the k3s Traefik with a Let's Encrypt (ACME) resolver `le` using the HTTP-01 challenge, with a persistent cert store. Applied once per cluster. |
-| `kustomization.yaml` | Kustomization | Bundles `redis`, `pixelflux`, `hpa`, and the HTTP `ingressroute`. |
+| File                    | Kind(s)                                      | Purpose                                                                                                                                                   |
+| ----------------------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `redis.yaml`            | Deployment, Service                          | Redis for shared canvas state and pub/sub fan-out. Ephemeral (no PVC).                                                                                    |
+| `pixelflux.yaml`        | Deployment, Service                          | The app: 3 replicas, non-root (uid 65532), read-only root FS, `/health` probes. Service exposes port 80 → 3000.                                           |
+| `hpa.yaml`              | HorizontalPodAutoscaler, PodDisruptionBudget | Autoscale 3→10 at 70% CPU; keep ≥2 fronts available during disruptions.                                                                                   |
+| `ingressroute.yaml`     | IngressRoute                                 | **HTTP** route (Traefik `web` entrypoint). Host is a placeholder. Part of the kustomization.                                                              |
+| `ingressroute-tls.yaml` | Middleware, IngressRoute ×2                  | **HTTPS** route: HTTP→HTTPS redirect + TLS route with a Let's Encrypt cert. Applied separately by `task deploy:tls`.                                      |
+| `traefik-acme.yaml`     | HelmChartConfig                              | Configures the k3s Traefik with a Let's Encrypt (ACME) resolver `le` using the HTTP-01 challenge, with a persistent cert store. Applied once per cluster. |
+| `kustomization.yaml`    | Kustomization                                | Bundles `redis`, `pixelflux`, `hpa`, and the HTTP `ingressroute`.                                                                                         |
 
 ## Deploy flow (tasks)
 

@@ -6,14 +6,14 @@ executable contract test suite.
 
 ## Endpoints
 
-| Method | Route | Description |
-| --- | --- | --- |
-| GET | `/` | Web UI (embedded single page) |
-| GET | `/health` | Liveness probe → `{"status":"ok"}` |
-| GET | `/info` | `{"name", "version", "instance"}` — `instance` is the pod/host serving the request (makes load balancing visible) |
-| GET | `/api/canvas` | Whole canvas → `{"width", "height", "palette", "pixels"}` (`pixels` is a `width*height` hex string, one palette index per cell) |
-| POST | `/api/pixel` | Paint one pixel → body `{"x", "y", "color"}` → `{"ok": true}` (400 if out of bounds or invalid colour) |
-| GET | `/api/events` | Live pixel stream (Server-Sent Events); each event's data is `{"x","y","color"}` |
+| Method | Route         | Description                                                                                                                     |
+| ------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/`           | Web UI (embedded single page)                                                                                                   |
+| GET    | `/health`     | Liveness probe → `{"status":"ok"}`                                                                                              |
+| GET    | `/info`       | `{"name", "version", "instance"}` — `instance` is the pod/host serving the request (makes load balancing visible)               |
+| GET    | `/api/canvas` | Whole canvas → `{"width", "height", "palette", "pixels"}` (`pixels` is a `width*height` hex string, one palette index per cell) |
+| POST   | `/api/pixel`  | Paint one pixel → body `{"x", "y", "color"}` → `{"ok": true}` (400 if out of bounds or invalid colour)                          |
+| GET    | `/api/events` | Live pixel stream (Server-Sent Events); each event's data is `{"x","y","color"}`                                                |
 
 The canvas is **64×64** with a **16-colour palette** (`color` is `0..15`).
 

@@ -69,19 +69,19 @@ We follow [Conventional Commits](https://www.conventionalcommits.org/). The
 
 Allowed types:
 
-| Type | When to use it |
-| --- | --- |
-| `feat` | A new feature |
-| `fix` | A bug fix |
-| `docs` | Documentation only |
-| `style` | Formatting, no code change |
+| Type       | When to use it                                          |
+| ---------- | ------------------------------------------------------- |
+| `feat`     | A new feature                                           |
+| `fix`      | A bug fix                                               |
+| `docs`     | Documentation only                                      |
+| `style`    | Formatting, no code change                              |
 | `refactor` | Code change that neither fixes a bug nor adds a feature |
-| `perf` | A performance improvement |
-| `test` | Adding or fixing tests |
-| `build` | Build system or dependencies |
-| `ci` | CI configuration |
-| `chore` | Maintenance, tooling |
-| `revert` | Reverting a previous commit |
+| `perf`     | A performance improvement                               |
+| `test`     | Adding or fixing tests                                  |
+| `build`    | Build system or dependencies                            |
+| `ci`       | CI configuration                                        |
+| `chore`    | Maintenance, tooling                                    |
+| `revert`   | Reverting a previous commit                             |
 
 Examples:
 
@@ -95,11 +95,11 @@ ci: implement sbom task with Syft
 
 Installed with `task hooks:install` (managed by [lefthook](https://lefthook.dev/)):
 
-| Hook | What runs |
-| --- | --- |
+| Hook         | What runs                                                                                     |
+| ------------ | --------------------------------------------------------------------------------------------- |
 | `pre-commit` | format staged files (treefmt), `clippy -D warnings`, secret scan on staged changes (gitleaks) |
-| `commit-msg` | enforce Conventional Commits |
-| `pre-push` | unit tests + a release build |
+| `commit-msg` | enforce Conventional Commits                                                                  |
+| `pre-push`   | unit tests + a release build                                                                  |
 
 To bypass them in an emergency: `git commit --no-verify` (avoid on shared
 branches — CI will still enforce the same checks).
@@ -132,12 +132,12 @@ REDIS_URL=redis://localhost:6379 task run
 There are four levels of tests. Unit tests run anywhere; the others need a
 container runtime and/or a running server.
 
-| Level | Command | What it does | Needs |
-| --- | --- | --- | --- |
-| Unit | `task test` | Canvas logic and routes exercised in-memory | nothing |
-| Integration | `task test:integration` | A pixel painted via one instance is read back from a **real Redis** (Testcontainers) | Docker/Podman |
-| API contract | `task test:api` | Boots the server, validates it against `api/openapi.yaml` with Hurl | — |
-| Load / benchmark | `task bench` | k6 reads the canvas and paints random pixels under load (p95 < 200 ms, < 1% errors) | — |
+| Level            | Command                 | What it does                                                                         | Needs         |
+| ---------------- | ----------------------- | ------------------------------------------------------------------------------------ | ------------- |
+| Unit             | `task test`             | Canvas logic and routes exercised in-memory                                          | nothing       |
+| Integration      | `task test:integration` | A pixel painted via one instance is read back from a **real Redis** (Testcontainers) | Docker/Podman |
+| API contract     | `task test:api`         | Boots the server, validates it against `api/openapi.yaml` with Hurl                  | —             |
+| Load / benchmark | `task bench`            | k6 reads the canvas and paints random pixels under load (p95 < 200 ms, < 1% errors)  | —             |
 
 `task test:api` and `task bench` start the server themselves and stop it when
 they finish, so you don't need a server running beforehand.
@@ -190,10 +190,10 @@ DOMAIN=your.domain.com ACME_EMAIL=you@domain.com task deploy:tls
 `.github/workflows/ci.yml` runs three jobs, all inside `nix develop` so CI and
 local development share the same toolchain:
 
-| Job | Checks |
-| --- | --- |
-| `quality` | lint, format check, secret scan |
-| `test` | build, unit tests, integration tests (Testcontainers) |
+| Job         | Checks                                                            |
+| ----------- | ----------------------------------------------------------------- |
+| `quality`   | lint, format check, secret scan                                   |
+| `test`      | build, unit tests, integration tests (Testcontainers)             |
 | `container` | build the distroless image, enforce < 20 MB, SBOM, Trivy CVE scan |
 
 The build fails if any check fails, so the server-side pipeline catches issues
