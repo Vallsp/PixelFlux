@@ -63,7 +63,7 @@ git push -u origin feat/eraser-tool
 We follow [Conventional Commits](https://www.conventionalcommits.org/). The
 `commit-msg` hook **rejects** any message that doesn't match. Format:
 
-```
+```text
 <type>(<optional scope>): <description>
 ```
 
@@ -85,7 +85,7 @@ Allowed types:
 
 Examples:
 
-```
+```text
 feat: add an eraser tool to the canvas
 fix(redis): reconnect the pub/sub subscriber on drop
 ci: implement sbom task with Syft
