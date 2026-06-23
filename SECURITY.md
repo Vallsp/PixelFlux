@@ -10,7 +10,7 @@ Please **do not** open a public issue for security problems.
 
 - Preferred: open a private report via GitHub
   ([Security → Report a vulnerability](https://github.com/Vallsp/PixelFlux/security/advisories/new)).
-- Or email the maintainers at **valentinlespine@gmail.com** with the details and,
+- Or email the maintainers at <valentinlespine@gmail.com> with the details and,
   if possible, a minimal reproduction.
 
 We aim to acknowledge a report within a few days and to fix confirmed issues on
