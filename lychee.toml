@@ -12,8 +12,6 @@ exclude = [
   "example\\.com",
   "your\\.domain\\.com",
   "ik-clicker\\.com",
-  # The GitHub Pages site only exists once Pages is enabled for the repo.
-  "[Vv]allsp\\.github\\.io/[Pp]ixel[Ff]lux",
 ]
 
 # Skip generated/build dirs.
