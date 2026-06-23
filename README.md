@@ -20,6 +20,38 @@ The app itself is small — the point of the project is the tooling around it:
 a one-command dev shell, a tiny distroless container (< 20 MB, 0-CVE target),
 automated tests and security scans, and a Kubernetes deployment.
 
+## Architecture
+
+A single Rust binary (axum) serves the embedded web UI and the API. The canvas
+lives in Redis — shared across instances — and real-time updates are pushed to
+browsers over SSE, fanned out between instances with Redis pub/sub. Without
+Redis it falls back to an in-memory canvas.
+
+```mermaid
+flowchart LR
+    subgraph B["Browser"]
+        UI["Web UI<br/>canvas grid + palette"]
+        ES["EventSource<br/>SSE client"]
+    end
+
+    subgraph SRV["pixelflux (Rust / axum)"]
+        R["Routes<br/>/ &middot; /health &middot; /info<br/>/api/canvas &middot; /api/pixel &middot; /api/events"]
+        ST["AppState<br/>canvas access + broadcast channel"]
+        R --> ST
+    end
+
+    subgraph RDS["Redis"]
+        K["canvas (string)"]
+        PS["pub/sub channel"]
+    end
+
+    UI -->|GET / &middot; GET /api/canvas| R
+    UI -->|POST /api/pixel| R
+    R -->|SSE stream| ES
+    ST <-->|GET / SETRANGE| K
+    ST <-->|PUBLISH / SUBSCRIBE| PS
+```
+
 ## Quick start
 
 Needs [Nix](https://nixos.org/download) (with flakes) and Docker or Podman.
@@ -38,6 +70,28 @@ For the shared, persisted canvas, run a Redis alongside:
 ```bash
 docker run -d -p 6379:6379 redis:7-alpine
 REDIS_URL=redis://localhost:6379 task run
+```
+
+### What `task run` does
+
+```mermaid
+sequenceDiagram
+    actor Dev as Developer
+    participant T as task run
+    participant C as cargo
+    participant App as pixelflux (:3000)
+    participant S as Canvas store
+    actor Br as Browser
+
+    Dev->>T: task run
+    T->>C: cargo run
+    C->>App: compile (debug) and start
+    Note over App,S: REDIS_URL set: Redis<br/>otherwise: in-memory
+    Br->>App: open http://localhost:3000
+    App-->>Br: embedded web UI
+    Br->>App: POST /api/pixel
+    App->>S: store the pixel
+    App-->>Br: SSE /api/events (live update)
 ```
 
 ## What the project delivers
@@ -114,6 +168,55 @@ Rust ([axum]) · [Nix] flake (dev shell + container) · [go-task] · [lefthook] 
 | GET    | `/api/events` | Live pixel stream (SSE)             |
 
 ## Deploy (Kubernetes + Traefik)
+
+### Architecture
+
+Traefik load-balances incoming requests across the app pods (round-robin via the
+Service); the HorizontalPodAutoscaler adds or removes pods under load. Every pod
+shares the same canvas through Redis, and real-time pixel updates are fanned out
+to all pods with Redis pub/sub.
+
+```mermaid
+flowchart TD
+    U["Visitors (browsers)"]
+    T["Traefik — Ingress / Load Balancer<br/>:80 HTTP &middot; :443 HTTPS"]
+    S["Service: pixelflux<br/>ClusterIP :80 &rarr; :3000"]
+    subgraph D["Deployment: pixelflux"]
+        P1["Pod 1"]
+        P2["Pod 2"]
+        P3["Pod 3"]
+    end
+    H["HorizontalPodAutoscaler<br/>3 &rarr; 10 pods @ 70% CPU"]
+    R["Redis<br/>canvas state + pub/sub"]
+
+    U -->|HTTP / HTTPS| T
+    T -->|round-robin| S
+    S --> P1
+    S --> P2
+    S --> P3
+    H -. scales .-> D
+    P1 <--> R
+    P2 <--> R
+    P3 <--> R
+```
+
+Whichever pod serves a painted pixel, it reaches every connected browser:
+
+```mermaid
+sequenceDiagram
+    actor A as Browser A
+    participant LB as Traefik (LB)
+    participant Pi as Pod i (chosen by LB)
+    participant R as Redis
+    participant All as Every pod
+    actor B as Other browsers
+
+    A->>LB: POST /api/pixel {x,y,color}
+    LB->>Pi: forward (load-balanced)
+    Pi->>R: SETRANGE canvas + PUBLISH
+    R-->>All: pub/sub event
+    All-->>B: SSE /api/events (live pixel)
+```
 
 Runs several replicas behind Traefik; the canvas is shared via Redis and
 real-time updates propagate with Redis pub/sub. On a single-node **k3s** host:
