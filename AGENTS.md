@@ -22,23 +22,23 @@ task hooks:install     # install the git hooks
 
 Run `task` with no arguments to list everything. The ones you'll use most:
 
-| Goal | Command |
-| --- | --- |
-| Run the server (`:3000`) | `task run` |
-| Build | `task build` |
-| Format everything | `task fmt` |
-| Lint (code + config) | `task lint` |
-| Check docs (prose + links) | `task docs:lint` |
-| Unit tests | `task test` |
-| Integration tests (real Redis) | `task test:integration` |
-| API contract tests | `task test:api` |
-| Load test | `task bench` |
-| Secret scan | `task secrets` |
-| Build container | `task container` |
-| Image size guard (< 20 MB) | `task container:size` |
-| SBOM / CVE scan | `task sbom` / `task cve` |
-| Deploy (k3s + Traefik) | `task deploy`, `task deploy:tls` |
-| Full local gate | `task check` |
+| Goal                           | Command                          |
+| ------------------------------ | -------------------------------- |
+| Run the server (`:3000`)       | `task run`                       |
+| Build                          | `task build`                     |
+| Format everything              | `task fmt`                       |
+| Lint (code + config)           | `task lint`                      |
+| Check docs (prose + links)     | `task docs:lint`                 |
+| Unit tests                     | `task test`                      |
+| Integration tests (real Redis) | `task test:integration`          |
+| API contract tests             | `task test:api`                  |
+| Load test                      | `task bench`                     |
+| Secret scan                    | `task secrets`                   |
+| Build container                | `task container`                 |
+| Image size guard (< 20 MB)     | `task container:size`            |
+| SBOM / CVE scan                | `task sbom` / `task cve`         |
+| Deploy (k3s + Traefik)         | `task deploy`, `task deploy:tls` |
+| Full local gate                | `task check`                     |
 
 ## Conventions
 
@@ -52,15 +52,15 @@ Run `task` with no arguments to list everything. The ones you'll use most:
 
 ## Where things are
 
-| Path | What |
-| --- | --- |
-| `src/` | Rust app (`lib.rs` = canvas + routes, `main.rs`, `index.html` = embedded UI) |
-| `api/` | OpenAPI spec + Hurl contract tests |
-| `load/` | k6 load test |
-| `k8s/` | Kubernetes manifests + Traefik |
-| `argocd/` | Argo CD GitOps Application |
-| `flake.nix` | Dev shell + container build |
-| `Taskfile.yml` | Every task |
+| Path           | What                                                                         |
+| -------------- | ---------------------------------------------------------------------------- |
+| `src/`         | Rust app (`lib.rs` = canvas + routes, `main.rs`, `index.html` = embedded UI) |
+| `api/`         | OpenAPI spec + Hurl contract tests                                           |
+| `load/`        | k6 load test                                                                 |
+| `k8s/`         | Kubernetes manifests + Traefik                                               |
+| `argocd/`      | Argo CD GitOps Application                                                   |
+| `flake.nix`    | Dev shell + container build                                                  |
+| `Taskfile.yml` | Every task                                                                   |
 
 ## Before you finish a change
 

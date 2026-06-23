@@ -39,6 +39,12 @@ spec:
     # Per-cluster ingress host. Set the Host(...) value below at setup time;
     # the shared k8s/ base stays domain-agnostic.
     kustomize:
+      # Pull the CI-published image from GHCR instead of the base's local
+      # `pixelflux:latest`; the shared k8s/ base stays usable for local k3s.
+      images:
+        - name: pixelflux
+          newName: ghcr.io/vallsp/pixelflux
+          newTag: "0.1.0"
       patches:
         - target:
             kind: IngressRoute
