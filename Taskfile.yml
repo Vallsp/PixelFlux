@@ -273,6 +273,22 @@ tasks:
     cmds:
       - "{{.KUBECTL}} delete -k k8s/"
 
+  # --- Local k3d (one command) -------------------------------------------
+  k3d:up:
+    desc: One command — k3d + Argo CD + secrets (.env) + the app (GitOps)
+    cmds:
+      - bash cluster/k3d-up.sh
+
+  k3d:dev:
+    desc: Fast local loop — k3d + locally-built image, no Argo/GHCR/secrets
+    cmds:
+      - bash cluster/k3d-dev.sh
+
+  k3d:down:
+    desc: Delete the local k3d cluster
+    cmds:
+      - bash cluster/k3d-down.sh
+
   cve:
     desc: Scan the container image for CVEs (Trivy)
     deps:

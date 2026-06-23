@@ -6,3 +6,5 @@ sbom.json
 .direnv
 .task
 docs/book/out
+.env
+.claude
