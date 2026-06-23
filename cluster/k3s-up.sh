@@ -55,7 +55,9 @@ sed "s/admin@example.com/$ACME_EMAIL/" "$REPO_ROOT/k8s/traefik-acme.yaml" \
 # --- 3. Argo CD ------------------------------------------------------------
 echo "==> installing Argo CD"
 "${KUBECTL[@]}" get namespace argocd >/dev/null 2>&1 || "${KUBECTL[@]}" create namespace argocd
-"${KUBECTL[@]}" apply -n argocd \
+# --server-side: Argo's CRDs are too big for a client-side apply (the
+# last-applied-configuration annotation would exceed 262144 bytes).
+"${KUBECTL[@]}" apply -n argocd --server-side --force-conflicts \
   -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_REF}/manifests/install.yaml"
 "${KUBECTL[@]}" -n argocd rollout status deploy/argocd-server --timeout=300s
 
