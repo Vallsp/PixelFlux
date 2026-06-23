@@ -82,8 +82,7 @@
   <body>
     <h1>🎨 Pixelflux</h1>
     <p class="sub">
-      Pick a colour, click or drag on the grid to paint. The canvas is shared
-      with everyone and updates live (SSE + Redis).
+      Pick a colour, click or drag on the grid to paint.
     </p>
     <div id="palette"></div>
     <div id="grid"></div>
@@ -210,11 +209,4 @@
         await fullSync();
         connect();
         refreshInstance();
-        // Safety-net reconciliation (covers multi-instance / missed events).
-        setInterval(fullSync, 10000);
-        // Show which replica answers (makes load balancing visible).
-        setInterval(refreshInstance, 3000);
-      })();
-    </script>
-  </body>
-</html>
+        // Safety-net reconciliation (covers multi-instance / 

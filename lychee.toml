@@ -1,0 +1,14 @@
+# lychee — broken-link checker for the docs.
+# Run with: task links   (or: lychee .)
+no_progress = true
+
+# Don't flag local/dev/placeholder URLs.
+exclude = [
+  "^https?://localhost",
+  "^https?://127\\.0\\.0\\.1",
+  "example\\.com",
+  "your\\.domain\\.com",
+]
+
+# Skip generated/build dirs.
+exclude_path = ["target", "result", ".git"]

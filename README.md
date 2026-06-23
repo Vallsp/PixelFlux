@@ -240,6 +240,17 @@ After enabling HTTPS, use `task deploy:restart` (not `task deploy`) for code
 changes, so the HTTPS route is preserved. Other helpers: `task deploy:status`,
 `task deploy:logs`, `task deploy:down`. Manifests are in [`k8s/`](k8s/).
 
+## Documentation
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, git workflow, running the tests
+- [AGENTS.md](AGENTS.md) — instructions for AI agents and contributors
+- [Architecture Decision Records](docs/adr/) — why the key choices were made
+- [api/README.md](api/README.md) — API endpoints and contract tests
+- [k8s/README.md](k8s/README.md) — Kubernetes manifests and deploy flow
+- [argocd/README.md](argocd/README.md) — GitOps with Argo CD
+- [load/README.md](load/README.md) — k6 load tests
+- [SECURITY.md](SECURITY.md), [CHANGELOG.md](CHANGELOG.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+
 ## License
 
 [MIT](LICENSE) © Vallsp
