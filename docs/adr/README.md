@@ -18,3 +18,4 @@ old one.
 | 0003 | [Back the canvas with Redis and pub/sub](0003-redis-canvas-and-pubsub.md)                   | Accepted |
 | 0004 | [Use Server-Sent Events instead of WebSockets](0004-sse-over-websockets.md)                 | Accepted |
 | 0005 | [Deploy on Kubernetes behind Traefik](0005-kubernetes-traefik-deployment.md)                | Accepted |
+| 0006 | [Publish documentation with mdBook](0006-mdbook-docs.md)                                    | Accepted |

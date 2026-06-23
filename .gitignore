@@ -5,3 +5,4 @@ result-*
 sbom.json
 .direnv
 .task
+docs/book/out

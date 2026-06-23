@@ -29,6 +29,8 @@ Run `task` with no arguments to list everything. The ones you'll use most:
 | Format everything              | `task fmt`                       |
 | Lint (code + config)           | `task lint`                      |
 | Check docs (prose + links)     | `task docs:lint`                 |
+| Build the docs site (mdBook)   | `task docs:build`                |
+| Serve the docs locally         | `task docs:serve`                |
 | Unit tests                     | `task test`                      |
 | Integration tests (real Redis) | `task test:integration`          |
 | API contract tests             | `task test:api`                  |
@@ -59,6 +61,7 @@ Run `task` with no arguments to list everything. The ones you'll use most:
 | `load/`        | k6 load test                                                                 |
 | `k8s/`         | Kubernetes manifests + Traefik                                               |
 | `argocd/`      | Argo CD GitOps Application                                                   |
+| `docs/`        | ADRs (`docs/adr/`) + the mdBook documentation site (`docs/book/`)            |
 | `flake.nix`    | Dev shell + container build                                                  |
 | `Taskfile.yml` | Every task                                                                   |
 

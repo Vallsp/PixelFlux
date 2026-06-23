@@ -14,7 +14,9 @@ exclude = [
   "ik-clicker\\.com",
   # This repo is private, so unauthenticated checks 404 on its own links.
   "github\\.com/Vallsp/[Pp]ixel[Ff]lux",
+  # The GitHub Pages site only exists once Pages is enabled (paid for private repos).
+  "[Vv]allsp\\.github\\.io/[Pp]ixel[Ff]lux",
 ]
 
 # Skip generated/build dirs.
-exclude_path = ["target", "result", ".git"]
+exclude_path = ["target", "result", ".git", "docs/book/out"]

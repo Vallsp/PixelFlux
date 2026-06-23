@@ -93,6 +93,18 @@ tasks:
       - task: prose
       - task: links
 
+  docs:build:
+    desc: Build the mdBook documentation site (docs/book/out)
+    dir: docs/book
+    cmds:
+      - mdbook build
+
+  docs:serve:
+    desc: Serve the docs locally with live reload (http://localhost:3001)
+    dir: docs/book
+    cmds:
+      - mdbook serve --port 3001
+
   check:
     desc: Full local gate — lint + secrets + tests
     cmds:

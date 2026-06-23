@@ -107,6 +107,10 @@
             pkgs.vale
             pkgs.lychee
 
+            # Documentation site
+            pkgs.mdbook
+            pkgs.mdbook-mermaid
+
             # Misc utilities
             pkgs.jq
             pkgs.docker-client

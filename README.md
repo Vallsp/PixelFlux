@@ -9,6 +9,8 @@
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue" />
 </p>
 
+<!-- ANCHOR: what -->
+
 ## What it is
 
 A shared **64×64 pixel canvas**: pick a colour, click to paint, and everyone
@@ -19,6 +21,10 @@ falls back to an in-memory canvas, so it runs with zero dependencies.
 The app itself is small — the point of the project is the tooling around it:
 a one-command dev shell, a tiny distroless container (< 20 MB, 0-CVE target),
 automated tests and security scans, and a Kubernetes deployment.
+
+<!-- ANCHOR_END: what -->
+
+<!-- ANCHOR: architecture -->
 
 ## Architecture
 
@@ -51,6 +57,10 @@ flowchart LR
     ST <-->|GET / SETRANGE| K
     ST <-->|PUBLISH / SUBSCRIBE| PS
 ```
+
+<!-- ANCHOR_END: architecture -->
+
+<!-- ANCHOR: quickstart -->
 
 ## Quick start
 
@@ -93,6 +103,8 @@ sequenceDiagram
     App->>S: store the pixel
     App-->>Br: SSE /api/events (live update)
 ```
+
+<!-- ANCHOR_END: quickstart -->
 
 ## What the project delivers
 
@@ -156,6 +168,8 @@ Rust ([axum]) · [Nix] flake (dev shell + container) · [go-task] · [lefthook] 
 [GitHub Actions]: https://github.com/features/actions
 [Traefik]: https://traefik.io/
 
+<!-- ANCHOR: api -->
+
 ## API
 
 | Method | Route         | Description                         |
@@ -166,6 +180,10 @@ Rust ([axum]) · [Nix] flake (dev shell + container) · [go-task] · [lefthook] 
 | GET    | `/api/canvas` | Whole canvas                        |
 | POST   | `/api/pixel`  | Paint a pixel `{x, y, color}`       |
 | GET    | `/api/events` | Live pixel stream (SSE)             |
+
+<!-- ANCHOR_END: api -->
+
+<!-- ANCHOR: deploy -->
 
 ## Deploy (Kubernetes + Traefik)
 
@@ -240,8 +258,13 @@ After enabling HTTPS, use `task deploy:restart` (not `task deploy`) for code
 changes, so the HTTPS route is preserved. Other helpers: `task deploy:status`,
 `task deploy:logs`, `task deploy:down`. Manifests are in [`k8s/`](k8s/).
 
+<!-- ANCHOR_END: deploy -->
+
 ## Documentation
 
+- **[Documentation handbook](docs/book/)** — every doc below plus the ADRs, built
+  into one searchable site with mdBook. Run `task docs:serve`, or read the
+  [published site](https://Vallsp.github.io/pixelflux/).
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, git workflow, running the tests
 - [AGENTS.md](AGENTS.md) — instructions for AI agents and contributors
 - [Architecture Decision Records](docs/adr/) — why the key choices were made

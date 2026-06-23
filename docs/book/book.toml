@@ -1,0 +1,17 @@
+[book]
+title = "Pixelflux"
+description = "A real-time multiplayer pixel canvas in Rust, wrapped in a full production SDLC pipeline."
+authors = ["Vallsp"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "out"
+
+[output.html]
+default-theme = "rust"
+git-repository-url = "https://github.com/Vallsp/pixelflux"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
