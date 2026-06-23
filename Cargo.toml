@@ -28,6 +28,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json"] }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+thiserror = "2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

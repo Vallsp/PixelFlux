@@ -42,6 +42,19 @@ pub const PALETTE: [&str; 16] = [
     "#e5d900", "#94e044", "#02be01", "#00d3dd", "#0083c7", "#0000ea", "#cf6ee4", "#820080",
 ];
 
+#[derive(Debug, thiserror::Error)]
+pub enum PixelError {
+    #[error("coordinates ({x}, {y}) out of bounds ({width}×{height})")]
+    OutOfBounds {
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+    },
+    #[error("color {0} is not in the palette (0–15)")]
+    InvalidColor(u8),
+}
+
 fn blank_canvas() -> Vec<u8> {
     vec![b'0'; WIDTH * HEIGHT]
 }
@@ -132,14 +145,19 @@ impl AppState {
         String::from_utf8(self.fallback.lock().unwrap().clone()).unwrap()
     }
 
-    /// Paint a single pixel. Returns `true` if the coordinates and colour were
-    /// valid and the change was applied. With Redis the update is published to
-    /// every instance; otherwise it is broadcast in-process.
-    pub async fn set_pixel(&self, x: usize, y: usize, color: u8) -> bool {
-        let ch = match (x < WIDTH, y < HEIGHT, hex_char(color)) {
-            (true, true, Some(ch)) => ch,
-            _ => return false,
-        };
+    /// Paint a single pixel. Returns an error if the coordinates or colour are
+    /// invalid. With Redis the update is published to every instance; otherwise
+    /// it is broadcast in-process.
+    pub async fn set_pixel(&self, x: usize, y: usize, color: u8) -> Result<(), PixelError> {
+        if x >= WIDTH || y >= HEIGHT {
+            return Err(PixelError::OutOfBounds {
+                x,
+                y,
+                width: WIDTH,
+                height: HEIGHT,
+            });
+        }
+        let ch = hex_char(color).ok_or(PixelError::InvalidColor(color))?;
         let offset = y * WIDTH + x;
         let payload = format!(r#"{{"x":{x},"y":{y},"color":{color}}}"#);
 
@@ -159,13 +177,13 @@ impl AppState {
                     .arg(&payload)
                     .query_async::<i64>(&mut conn)
                     .await;
-                return true;
+                return Ok(());
             }
         }
 
         self.fallback.lock().unwrap()[offset] = ch;
         let _ = self.tx.send(payload);
-        true
+        Ok(())
     }
 
     /// A stream of live pixel events for SSE subscribers.
@@ -253,13 +271,10 @@ async fn put_pixel(
     State(state): State<AppState>,
     Json(req): Json<PixelRequest>,
 ) -> (StatusCode, Json<PixelResponse>) {
-    let ok = state.set_pixel(req.x, req.y, req.color).await;
-    let code = if ok {
-        StatusCode::OK
-    } else {
-        StatusCode::BAD_REQUEST
-    };
-    (code, Json(PixelResponse { ok }))
+    match state.set_pixel(req.x, req.y, req.color).await {
+        Ok(()) => (StatusCode::OK, Json(PixelResponse { ok: true })),
+        Err(_) => (StatusCode::BAD_REQUEST, Json(PixelResponse { ok: false })),
+    }
 }
 
 async fn sse_events(
@@ -305,8 +320,8 @@ mod tests {
     #[tokio::test]
     async fn set_pixel_updates_the_canvas() {
         let state = AppState::new(None).await;
-        assert!(state.set_pixel(1, 0, 5).await); // offset 1 -> '5'
-        assert!(state.set_pixel(0, 1, 10).await); // offset WIDTH -> 'a'
+        assert!(state.set_pixel(1, 0, 5).await.is_ok()); // offset 1 -> '5'
+        assert!(state.set_pixel(0, 1, 10).await.is_ok()); // offset WIDTH -> 'a'
 
         let canvas = state.canvas().await;
         assert_eq!(canvas.as_bytes()[1], b'5');
@@ -316,16 +331,16 @@ mod tests {
     #[tokio::test]
     async fn set_pixel_rejects_invalid_input() {
         let state = AppState::new(None).await;
-        assert!(!state.set_pixel(WIDTH, 0, 1).await); // x out of bounds
-        assert!(!state.set_pixel(0, HEIGHT, 1).await); // y out of bounds
-        assert!(!state.set_pixel(0, 0, 99).await); // colour out of palette
+        assert!(state.set_pixel(WIDTH, 0, 1).await.is_err()); // x out of bounds
+        assert!(state.set_pixel(0, HEIGHT, 1).await.is_err()); // y out of bounds
+        assert!(state.set_pixel(0, 0, 99).await.is_err()); // colour out of palette
     }
 
     #[tokio::test]
     async fn painting_emits_a_live_event() {
         let state = AppState::new(None).await;
         let mut rx = state.tx.subscribe();
-        assert!(state.set_pixel(3, 4, 7).await);
+        assert!(state.set_pixel(3, 4, 7).await.is_ok());
         let msg = rx.recv().await.unwrap();
         assert_eq!(msg, r#"{"x":3,"y":4,"color":7}"#);
     }

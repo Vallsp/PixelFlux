@@ -21,7 +21,7 @@ async fn canvas_is_shared_through_redis() {
 
     // Paint a pixel through one server instance...
     let writer = AppState::new(Some(url.clone())).await;
-    assert!(writer.set_pixel(2, 3, 10).await); // colour 10 -> 'a'
+    assert!(writer.set_pixel(2, 3, 10).await.is_ok()); // colour 10 -> 'a'
     let offset = 3 * WIDTH + 2;
 
     // ...and read it back through a *separate* instance: the pixel must be
