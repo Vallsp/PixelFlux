@@ -11,6 +11,9 @@
 set -euo pipefail
 
 ARGOCD_REF="${ARGOCD_REF:-stable}"
+# Pinned: v1.x is a CRD rewrite with transitional docs; v0.18.0 is the last
+# classic annotation-driven release (tokenless "argocd" write-back).
+IMAGE_UPDATER_REF="${IMAGE_UPDATER_REF:-v0.18.0}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # --- config (DOMAIN, ACME_EMAIL): env vars win, else cluster/config.env ------
@@ -62,6 +65,15 @@ echo "==> installing Argo CD"
 "${KUBECTL[@]}" apply -n argocd --server-side --force-conflicts \
   -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_REF}/manifests/install.yaml"
 "${KUBECTL[@]}" -n argocd rollout status deploy/argocd-server --timeout=300s
+
+# --- 3b. Argo CD Image Updater (auto-rolls out new :latest digests) --------
+# Runs in the argocd namespace; its Role can patch Applications, so the
+# "argocd" write-back needs no token. The GHCR package is public, so no
+# registry secret either. See the annotations in argocd/application.yaml.
+echo "==> installing Argo CD Image Updater ($IMAGE_UPDATER_REF)"
+"${KUBECTL[@]}" apply -n argocd \
+  -f "https://raw.githubusercontent.com/argoproj-labs/argocd-image-updater/${IMAGE_UPDATER_REF}/manifests/install.yaml"
+"${KUBECTL[@]}" -n argocd rollout status deploy/argocd-image-updater --timeout=180s
 
 # --- 4. Application (domain rendered into the host patches) -----------------
 echo "==> applying the Argo CD Application (host=$DOMAIN)"

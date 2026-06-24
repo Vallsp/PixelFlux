@@ -22,11 +22,29 @@
 # points the app at the CI-published image on GHCR. Both the repo and the GHCR
 # package are public, so no git credential and no image pull secret are needed —
 # `task k3s:up` just installs Argo CD and applies this file.
+#
+# New images roll out automatically via Argo CD Image Updater (see the
+# annotations below) — installed alongside Argo CD by the bring-up script.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: pixelflux
   namespace: argocd
+  annotations:
+    # --- Argo CD Image Updater: close the GitOps loop on new images ----------
+    # CI pushes ghcr.io/vallsp/pixelflux:latest on every push to main. Image
+    # Updater polls GHCR, and when the :latest *digest* changes it pins the new
+    # digest into this Application's kustomize image override, which Argo then
+    # rolls out — no version bump, no re-apply. Write-back is the in-cluster
+    # "argocd" method: it patches THIS Application via the Kubernetes API
+    # (RBAC only — no Argo CD API token and no registry secret, since the
+    # GHCR package is public). It thus replaces the bootstrap tag in `images:`
+    # below with a digest-pinned ref at runtime.
+    argocd-image-updater.argoproj.io/image-list: pixelflux=ghcr.io/vallsp/pixelflux:latest
+    argocd-image-updater.argoproj.io/pixelflux.update-strategy: digest
+    argocd-image-updater.argoproj.io/pixelflux.kustomize.image-name: pixelflux
+    argocd-image-updater.argoproj.io/pixelflux.force-update: "true"
+    argocd-image-updater.argoproj.io/write-back-method: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -39,6 +57,9 @@ spec:
     kustomize:
       # Pull the CI-published image from GHCR instead of the base's local
       # `pixelflux:latest`; the shared k8s/ base stays usable for local k3s.
+      # This is a BOOTSTRAP value: Image Updater rewrites it to the current
+      # :latest digest at runtime (see the annotations above), so re-applying
+      # this file briefly resets it until the next poll (~2 min) re-pins it.
       images:
         - pixelflux=ghcr.io/vallsp/pixelflux:0.1.0
       # Per-cluster ingress host on BOTH routes — the HTTP->HTTPS redirect

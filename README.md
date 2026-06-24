@@ -250,8 +250,10 @@ cp cluster/config.env.example cluster/config.env   # set DOMAIN + ACME_EMAIL
 task k3s:up        # k3s + Argo CD + the app, in HTTPS  (local Docker: task k3d:up)
 ```
 
-From then on every `git push` to `main` is deployed automatically; the
-certificate is issued on the first request. Details in
+From then on every `git push` to `main` is deployed automatically: CI publishes a
+new image, **Argo CD Image Updater** (installed by the same command) spots the new
+`:latest` digest and pins it, and Argo rolls it out — no version bump, no
+re-apply. The certificate is issued on the first request. Details in
 [`argocd/README.md`](argocd/README.md).
 
 ### Option B — manual (imperative)

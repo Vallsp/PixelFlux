@@ -20,8 +20,41 @@ every push to `main` is rolled out automatically.
 Both the repo and the GHCR image are **public**, so Argo CD clones over anonymous
 HTTPS (`repoURL: https://github.com/...`) and the node pulls the public image —
 **no deploy key and no pull secret**. The `images:` override in `application.yaml`
-points the app at `ghcr.io/vallsp/pixelflux:<version>`, published by CI on every
-push to `main`.
+points the app at `ghcr.io/vallsp/pixelflux`, published by CI on every push to
+`main`.
+
+## Automatic image rollout (Argo CD Image Updater)
+
+Argo CD syncs **manifests, not images** — so a new image under the _same_ tag
+wouldn't otherwise trigger a sync. [Argo CD Image
+Updater](https://argocd-image-updater.readthedocs.io/) (pinned `v0.18.0`, the
+last classic annotation-driven release) closes that loop. The bring-up script
+installs it into the `argocd` namespace; the tracking lives in annotations on
+`application.yaml`:
+
+- **What it watches:** `ghcr.io/vallsp/pixelflux:latest` (CI pushes `:latest` on
+  every push to `main`).
+- **Strategy `digest`:** when the `:latest` _digest_ changes, it pins the new
+  digest into this Application's kustomize image override; Argo then rolls the
+  Deployment. No version bump, no re-apply.
+- **Write-back `argocd`:** it patches **this Application** via the Kubernetes API.
+  Its install Role grants `applications: get/list/update/patch`, so it needs **no
+  Argo CD API token**; the public GHCR package means **no registry secret**.
+
+So the full loop is: **push to `main` → CI builds & pushes `:latest` → Image
+Updater pins the new digest (polls ~every 2 min) → Argo rolls it out.**
+
+```bash
+# Watch it work:
+kubectl -n argocd logs deploy/argocd-image-updater -f
+kubectl -n argocd get application pixelflux \
+  -o jsonpath='{.spec.source.kustomize.images}{"\n"}'   # flips to a @sha256: ref
+```
+
+> Heads-up: re-running `task k3s:up`/`k3d:up` re-applies `application.yaml`, which
+> briefly resets the override to the bootstrap tag until the next poll re-pins the
+> digest. To follow a versioned tag instead of `:latest`, switch the strategy to
+> `semver` and bump `Cargo.toml`.
 
 ## Configuration (no values hard-coded)
 
@@ -77,6 +110,10 @@ committed YAML. The certificate is issued automatically on the first request
 - **Separate namespace.** Argo CD deploys into `pixelflux`; if you previously ran
   `task deploy` (default namespace), run `task deploy:down` first to avoid two
   copies.
-- **The image must exist.** Argo syncs manifests, not images — the GHCR image in
-  the Application's `images:` override must be published (CI does this on each
-  push to `main`) and the package set to public so the node can pull it.
+- **The image must exist.** The GHCR image must be published (CI does this on each
+  push to `main`) and the package set to public so the node can pull it and Image
+  Updater can read its tags.
+- **`:latest` is mutable.** Image Updater pins a `@sha256:` digest at runtime, so
+  the _running_ image is deterministic — but the bootstrap `images:` tag in git is
+  not. Don't read the committed tag as "what's deployed"; check the live
+  Application (see the command above).
