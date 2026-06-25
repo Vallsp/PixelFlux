@@ -86,7 +86,7 @@
     </p>
     <div id="palette"></div>
     <div id="grid"></div>
-    <footer>Pixelflux · status: <span id="status">connecting…</span> · served by <span id="instance">—</span></footer>
+    <footer>Pixelflux · v<span id="version">—</span> · status: <span id="status">connecting…</span> · served by <span id="instance">—</span></footer>
 
     <script>
       const PIXEL = 9;
@@ -200,6 +200,7 @@
           const d = await r.json();
           // Traefik round-robins, so the instance shown changes between calls.
           document.getElementById("instance").textContent = d.instance;
+          document.getElementById("version").textContent = d.version;
         } catch (e) {
           /* keep last value */
         }
