@@ -29,14 +29,15 @@ Rust · axum · Redis · SSE · Nix · Kubernetes · GitOps
 
 ---
 
-# Démonstration
+<!-- _class: lead -->
 
-- Déployé sur **k3s derrière Traefik**, servi en **HTTPS** (Let's Encrypt).
-- On peint dans un onglet → ça apparaît **instantanément** dans un autre.
-- Le pied de page affiche la **version** et **le pod** qui a répondu — rafraîchir le change.
-- Cette synchronisation entre onglets et entre pods, c'est toute l'histoire technique en un geste.
+# Démo
 
-<!-- Note : À faire en direct. Ouvrir deux onglets côte à côte, peindre dans l'un et regarder le pixel arriver dans l'autre. Puis montrer le pied de page : la version vient directement du build, et l'identifiant du pod change à chaque rafraîchissement car Traefik répartit la charge sur trois réplicas. Si le réseau flanche, basculer sur une capture d'écran. -->
+### Bascule vers l'application en direct →
+
+Peindre · synchro en temps réel · le pied de page (version + pod)
+
+<!-- Note : Basculer sur le navigateur, l'application déjà ouverte. Déroulé : (1) deux onglets côte à côte ; (2) peindre dans l'un, le pixel apparaît instantanément dans l'autre ; (3) pointer le pied de page : la version vient du build, et l'identifiant du pod change à chaque rafraîchissement car Traefik répartit la charge sur trois réplicas ; (4) au besoin, un troisième onglet pour montrer la diffusion à plusieurs clients. Plan B si le réseau flanche : une capture d'écran. Puis revenir aux diapositives. -->
 
 ---
 
