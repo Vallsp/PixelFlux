@@ -1,0 +1,4 @@
+# Marp slide decks use non-standard Markdown (one H1 per slide, directive
+# comments, punctuation in headings). They are authored layouts, not prose —
+# skip markdownlint here. Prose is still checked by Vale; see .vale.ini.
+docs/slides/

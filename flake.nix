@@ -111,6 +111,9 @@
             pkgs.mdbook
             pkgs.mdbook-mermaid
 
+            # Slides-as-code (Marp; HTML export needs no browser)
+            pkgs.marp-cli
+
             # Misc utilities
             pkgs.jq
             pkgs.docker-client

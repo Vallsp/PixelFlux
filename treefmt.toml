@@ -23,3 +23,5 @@ includes = ["*.sh"]
 command = "prettier"
 options = ["--write"]
 includes = ["*.md", "*.yaml", "*.yml", "*.json"]
+# Marp decks are hand-laid-out slides, not prose — let them own their formatting.
+excludes = ["docs/slides/**"]

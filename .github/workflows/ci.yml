@@ -113,6 +113,8 @@ jobs:
       - uses: DeterminateSystems/magic-nix-cache-action@main
       - name: Build docs site (mdBook)
         run: nix develop -c task docs:build
+      - name: Render slides (Marp)
+        run: nix develop -c task slides:build
       - name: Prose (Vale)
         run: nix develop -c task prose
       - name: Links (lychee)
@@ -134,8 +136,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
-      - name: Build docs site
-        run: nix develop -c task docs:build
+      - name: Build docs site + slides
+        run: nix develop -c task slides:publish # deps on docs:build, then renders /slides
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

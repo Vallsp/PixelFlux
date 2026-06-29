@@ -12,6 +12,8 @@ exclude = [
   "example\\.com",
   "your\\.domain\\.com",
   "ik-clicker\\.com",
+  # Slides path exists only after the first Pages deploy that publishes them.
+  "vallsp\\.github\\.io/PixelFlux/slides",
 ]
 
 # Skip generated/build dirs.
