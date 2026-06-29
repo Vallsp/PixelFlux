@@ -105,6 +105,30 @@ tasks:
     cmds:
       - mdbook serve --port 3001
 
+  # --- Slides (Marp — slides as code) ------------------------------------
+  slides:build:
+    desc: Render the Marp deck to a standalone HTML file (docs/slides/out)
+    dir: docs/slides
+    cmds:
+      - mkdir -p out
+      - marp overview.md --html --theme-set theme -o out/index.html
+      - 'echo "Slides → docs/slides/out/index.html"'
+
+  slides:serve:
+    desc: Live-preview the slides with reload (Marp server at http://localhost:8080)
+    dir: docs/slides
+    cmds:
+      - marp --server --watch --html --theme-set theme .
+
+  slides:publish:
+    desc: Render the deck into the mdBook output so Pages serves it at /slides
+    deps:
+      - docs:build
+    cmds:
+      - mkdir -p docs/book/out/slides
+      - marp docs/slides/overview.md --html --theme-set docs/slides/theme -o docs/book/out/slides/index.html
+      - 'echo "Slides published into docs/book/out/slides/"'
+
   check:
     desc: Full local gate — lint + secrets + tests
     cmds:

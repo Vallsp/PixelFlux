@@ -277,6 +277,9 @@ changes, so the HTTPS route is preserved. Other helpers: `task deploy:status`,
 - **[Documentation handbook](docs/book/)** — every doc below plus the ADRs, built
   into one searchable site with mdBook. Run `task docs:serve`, or read the
   [published site](https://vallsp.github.io/PixelFlux/).
+- **[Slides](https://vallsp.github.io/PixelFlux/slides/)** — a Marp deck on the
+  architecture and SDLC, authored as Markdown (`docs/slides/`) and published by CI
+  next to the docs. Build locally with `task slides:build`.
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, git workflow, running the tests
 - [AGENTS.md](AGENTS.md) — instructions for AI agents and contributors
 - [Architecture Decision Records](docs/adr/) — why the key choices were made

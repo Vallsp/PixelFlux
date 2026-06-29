@@ -1,0 +1,60 @@
+/* @theme pixelflux */
+/* A small Marp theme for the PixelFlux deck — extends the built-in default
+   with the canvas palette. Registered via `marp --theme-set docs/slides/theme`
+   and selected with `theme: pixelflux` in the deck frontmatter. */
+
+@import "default";
+
+:root {
+  --pf-bg: #14141f;
+  --pf-fg: #e9e9f2;
+  --pf-accent: #e84a5f;
+  --pf-accent-2: #4ad6c8;
+  --pf-muted: #ffffff66;
+}
+
+section {
+  background: var(--pf-bg);
+  color: var(--pf-fg);
+  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  padding: 56px 72px;
+}
+
+section h1,
+section h2 {
+  color: var(--pf-accent-2);
+}
+
+section a,
+section strong {
+  color: var(--pf-accent);
+}
+
+section code {
+  background: #00000040;
+  border-radius: 4px;
+  padding: 0 0.3em;
+}
+
+section blockquote {
+  border-left: 4px solid var(--pf-accent-2);
+  color: var(--pf-fg);
+  opacity: 0.9;
+}
+
+section table {
+  font-size: 0.85em;
+}
+
+section::after {
+  color: var(--pf-muted);
+}
+
+section.lead {
+  justify-content: center;
+  text-align: center;
+}
+
+section.lead h1 {
+  font-size: 2.1em;
+}
