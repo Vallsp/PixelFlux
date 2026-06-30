@@ -44,15 +44,30 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, version, instance, online]
+                required:
+                  [name, version, instance, online, paused, registration_open]
                 properties:
                   name: { type: string, example: pixelflux }
-                  version: { type: string, example: 0.3.0 }
+                  version: { type: string, example: 0.5.0 }
                   instance: { type: string, example: pixelflux-7d9c8-abcde }
                   online:
                     type: integer
                     description: Live viewers (open SSE connections), shared across replicas
                     example: 3
+                  paused:
+                    type: boolean
+                    description: True when an admin has enabled read-only maintenance mode
+                    example: false
+                  registration_open:
+                    type: boolean
+                    description: Whether new visitors can currently register a token
+                    example: true
+                  maintenance_message:
+                    type: string
+                    description: Banner text to show while paused
+                  announcement:
+                    type: string
+                    description: Site-wide announcement (empty = none)
   /api/canvas:
     get:
       summary: Get the whole canvas
@@ -64,7 +79,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [width, height, palette, pixels]
+                required: [width, height, palette, picker, enforce, pixels]
                 properties:
                   width: { type: integer, example: 200 }
                   height: { type: integer, example: 200 }
@@ -72,6 +87,14 @@ paths:
                     type: array
                     items: { type: string }
                     description: Default preset colours for the UI (pixels can be any RGB)
+                  picker:
+                    type: boolean
+                    description: Whether the UI offers the native colour picker (admin toggle)
+                    example: true
+                  enforce:
+                    type: boolean
+                    description: Whether only palette colours are accepted (server-enforced)
+                    example: false
                   pixels:
                     type: string
                     description: width*height*6 hex chars — an rrggbb RGB colour per pixel
@@ -128,7 +151,9 @@ paths:
                 properties:
                   ok: { type: boolean, example: true }
         "400":
-          description: Invalid coordinates or colour
+          description: >-
+            Invalid coordinates or colour, or — when palette enforcement is on —
+            a colour that is not in the configured palette.
           content:
             application/json:
               schema:
@@ -305,6 +330,18 @@ components:
         - online_ttl_secs
         - paused
       properties:
+        width:
+          type: integer
+          description: Canvas width in pixels (8–512). Changing it resets the canvas.
+          example: 200
+        height:
+          type: integer
+          description: Canvas height in pixels (8–512). Changing it resets the canvas.
+          example: 200
+        rate_limit_enabled:
+          type: boolean
+          description: Master switch for the paint budget; false = unlimited painting
+          example: true
         rate_limit:
           type: integer
           description: Max pixels per token per window (1–1000000)
@@ -329,6 +366,32 @@ components:
           type: integer
           description: Viewer entry expiry, seconds (2–600)
           example: 15
+        sse_coalesce_ms:
+          type: integer
+          description: SSE coalescing window in ms (1–1000); higher = less server fan-out
+          example: 16
+        palette:
+          type: array
+          items: { type: string }
+          description: Preset swatch colours (#rrggbb), max 64; invalid entries dropped
+        color_picker_enabled:
+          type: boolean
+          description: When false, the UI hides the native colour picker (presets only)
+          example: true
+        enforce_palette:
+          type: boolean
+          description: When true, the server rejects any pixel colour not in the palette (400)
+          example: false
+        registration_open:
+          type: boolean
+          description: When false, POST /register returns 503 (no new tokens)
+          example: true
+        maintenance_message:
+          type: string
+          description: Banner text shown to visitors while paused (max 200 chars)
+        announcement:
+          type: string
+          description: Site-wide announcement banner; empty = none (max 200 chars)
         paused:
           type: boolean
           description: Maintenance mode — when true, painting returns 503

@@ -26,9 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Kubernetes deployment: Traefik load balancing, 3 replicas, HPA, and
   automatic HTTPS via Let's Encrypt; Argo CD Application for GitOps.
 - Admin dashboard at `/admin` (enabled by `ADMIN_PASSWORD`): runtime-tunable
-  limits (rate limit/window, registration delay, token TTL, presence timings),
-  read-only maintenance mode, canvas reset, and live stats. Settings persist in
-  Redis and propagate to every replica via a `config:events` pub/sub channel.
+  limits (rate limit/window — with an on/off switch, registration delay, token
+  TTL, presence timings, and the SSE coalescing window for server fan-out), an
+  editable **canvas size** (8–512 px per side, which resets the canvas),
+  read-only maintenance mode (with a custom banner message), canvas reset, an
+  editable preset **colour palette** (optionally hide the colour picker or
+  enforce the palette server-side so off-palette colours are rejected by the
+  API), a site-wide **announcement banner**, an **open/close registration**
+  switch, and live stats.
+  Settings persist in Redis and propagate to every replica via a `config:events`
+  pub/sub channel.
   Auth uses a constant-time password check and an `HttpOnly`, `SameSite=Strict`
   session cookie.
 - Documentation: README with diagrams, CONTRIBUTING, per-directory READMEs,

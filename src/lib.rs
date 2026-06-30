@@ -32,6 +32,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, Stream, StreamExt};
 
+/// Default canvas dimensions. The live dimensions are held in `Settings`
+/// (admin-editable); these are the starting values for a fresh deployment.
 pub const WIDTH: usize = 200;
 pub const HEIGHT: usize = 200;
 /// Each pixel is stored as a 6-hex-digit RGB colour (`rrggbb`), so the canvas
@@ -72,10 +74,50 @@ const DEFAULT_RATE_WINDOW_SECS: u64 = 30;
 const DEFAULT_ONLINE_HEARTBEAT_SECS: u64 = 5;
 const DEFAULT_ONLINE_TTL_SECS: i64 = 15;
 
+/// Smallest and largest editable canvas side (pixels). A 512² canvas is ~1.5 MB
+/// as a hex string — fine for Redis and the full-fetch — while staying sane.
+const MIN_CANVAS_SIDE: usize = 8;
+const MAX_CANVAS_SIDE: usize = 512;
+
+fn default_canvas_width() -> usize {
+    WIDTH
+}
+fn default_canvas_height() -> usize {
+    HEIGHT
+}
+fn default_true() -> bool {
+    true
+}
+fn default_sse_coalesce_ms() -> u64 {
+    16
+}
+fn default_palette() -> Vec<String> {
+    PALETTE.iter().map(|s| s.to_string()).collect()
+}
+fn default_maintenance_message() -> String {
+    "Maintenance en cours — le canevas est en lecture seule, la peinture est \
+     temporairement désactivée."
+        .to_string()
+}
+/// Char-safe truncation so an over-long admin message can't bloat `/info`.
+fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
 /// Runtime-tunable settings, editable from the admin page and shared across
 /// replicas via Redis. Each value mirrors a former compile-time constant.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Settings {
+    /// Canvas width in pixels. Changing it resets the canvas to blank.
+    #[serde(default = "default_canvas_width")]
+    pub width: usize,
+    /// Canvas height in pixels. Changing it resets the canvas to blank.
+    #[serde(default = "default_canvas_height")]
+    pub height: usize,
+    /// Master switch for the per-token paint budget. When false, painting is
+    /// unlimited (token still required, maintenance still applies).
+    #[serde(default = "default_true")]
+    pub rate_limit_enabled: bool,
     /// Max pixels a token may paint per `rate_window_secs`.
     pub rate_limit: u64,
     /// Length of the rolling rate-limit window, in seconds.
@@ -88,6 +130,32 @@ pub struct Settings {
     pub online_heartbeat_secs: u64,
     /// Viewer entry expiry, in seconds.
     pub online_ttl_secs: i64,
+    /// SSE coalescing window in milliseconds: pixel updates are buffered and
+    /// flushed once per window, trading a little latency for far less fan-out
+    /// (cost becomes `ticks × clients` instead of `writes × clients`).
+    #[serde(default = "default_sse_coalesce_ms")]
+    pub sse_coalesce_ms: u64,
+    /// Preset colours offered as quick swatches in the UI (`#rrggbb`).
+    #[serde(default = "default_palette")]
+    pub palette: Vec<String>,
+    /// Whether the public UI offers the native colour picker (the "pipette").
+    /// When false, visitors are limited to the preset palette.
+    #[serde(default = "default_true")]
+    pub color_picker_enabled: bool,
+    /// Server-side enforcement: when true, `set_pixel` rejects any colour that
+    /// is not in `palette` (so the API can't be used to bypass the UI).
+    #[serde(default)]
+    pub enforce_palette: bool,
+    /// Whether new visitors may register a paint token. When false, `/register`
+    /// returns 503 (existing painters keep working).
+    #[serde(default = "default_true")]
+    pub registration_open: bool,
+    /// Banner text shown to visitors while `paused` is true.
+    #[serde(default = "default_maintenance_message")]
+    pub maintenance_message: String,
+    /// Free-text announcement shown to everyone (empty = no banner).
+    #[serde(default)]
+    pub announcement: String,
     /// Maintenance switch: when true the canvas is read-only (paint → 503).
     pub paused: bool,
 }
@@ -95,12 +163,22 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            width: default_canvas_width(),
+            height: default_canvas_height(),
+            rate_limit_enabled: true,
             rate_limit: DEFAULT_RATE_LIMIT,
             rate_window_secs: DEFAULT_RATE_WINDOW_SECS,
             register_delay_secs: DEFAULT_REGISTER_DELAY_SECS,
             token_ttl_secs: DEFAULT_TOKEN_TTL_SECS,
             online_heartbeat_secs: DEFAULT_ONLINE_HEARTBEAT_SECS,
             online_ttl_secs: DEFAULT_ONLINE_TTL_SECS,
+            sse_coalesce_ms: default_sse_coalesce_ms(),
+            palette: default_palette(),
+            color_picker_enabled: true,
+            enforce_palette: false,
+            registration_open: true,
+            maintenance_message: default_maintenance_message(),
+            announcement: String::new(),
             paused: false,
         }
     }
@@ -108,14 +186,41 @@ impl Default for Settings {
 
 impl Settings {
     /// Clamp incoming values to sane bounds so the admin can't brick the app
-    /// (e.g. a zero window that divides by nothing, or absurd delays).
+    /// (e.g. a zero window that divides by nothing, or absurd delays/sizes).
     fn sanitized(mut self) -> Self {
+        self.width = self.width.clamp(MIN_CANVAS_SIDE, MAX_CANVAS_SIDE);
+        self.height = self.height.clamp(MIN_CANVAS_SIDE, MAX_CANVAS_SIDE);
         self.rate_limit = self.rate_limit.clamp(1, 1_000_000);
         self.rate_window_secs = self.rate_window_secs.clamp(1, 3_600);
         self.register_delay_secs = self.register_delay_secs.min(60);
         self.token_ttl_secs = self.token_ttl_secs.clamp(60, 2_592_000);
         self.online_heartbeat_secs = self.online_heartbeat_secs.clamp(1, 300);
         self.online_ttl_secs = self.online_ttl_secs.clamp(2, 600);
+        self.sse_coalesce_ms = self.sse_coalesce_ms.clamp(1, 1_000);
+        // Palette: keep only valid 6-hex colours, normalised to `#rrggbb`, deduped
+        // and capped. Fall back to the default set if nothing valid remains.
+        let mut palette: Vec<String> = Vec::new();
+        for c in &self.palette {
+            if let Some(hex) = normalize_color(c) {
+                let entry = format!("#{hex}");
+                if !palette.contains(&entry) {
+                    palette.push(entry);
+                }
+            }
+            if palette.len() >= 64 {
+                break;
+            }
+        }
+        self.palette = if palette.is_empty() {
+            default_palette()
+        } else {
+            palette
+        };
+        self.maintenance_message = truncate_chars(self.maintenance_message.trim(), 200);
+        if self.maintenance_message.is_empty() {
+            self.maintenance_message = default_maintenance_message();
+        }
+        self.announcement = truncate_chars(self.announcement.trim(), 200);
         self
     }
 }
@@ -146,6 +251,8 @@ pub enum PixelError {
     },
     #[error("color {0:?} is not a 6-digit hex colour (rrggbb)")]
     InvalidColor(String),
+    #[error("color {0:?} is not in the allowed palette")]
+    NotInPalette(String),
 }
 
 /// Map a `PixelError` to a 400 response carrying its message.
@@ -195,9 +302,9 @@ impl IntoResponse for ApiError {
     }
 }
 
-fn blank_canvas() -> Vec<u8> {
+fn blank_canvas(width: usize, height: usize) -> Vec<u8> {
     // White background: "ffffff" per pixel.
-    b"ffffff".repeat(WIDTH * HEIGHT)
+    b"ffffff".repeat(width * height)
 }
 
 /// Validate and normalise a colour to 6 lowercase hex digits (no `#`), or
@@ -275,11 +382,17 @@ fn drain_to_batch(map: HashMap<(u16, u16), String>) -> Option<String> {
 /// Background task: every `period`, swap the buffer out and, if non-empty,
 /// broadcast a single batched event to all SSE clients. Coalescing the fan-out
 /// onto a tick turns its cost from `writes × clients` into `ticks × clients`.
-fn spawn_flusher(buffer: PixelBuffer, tx: broadcast::Sender<String>, period: Duration) {
+fn spawn_flusher(
+    buffer: PixelBuffer,
+    tx: broadcast::Sender<String>,
+    settings: Arc<Mutex<Settings>>,
+) {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(period);
         loop {
-            tick.tick().await;
+            // Read the live coalescing window each tick so an admin change to
+            // `sse_coalesce_ms` takes effect without a restart.
+            let period_ms = settings.lock().unwrap().sse_coalesce_ms.max(1);
+            tokio::time::sleep(Duration::from_millis(period_ms)).await;
             // Swap the buffer out and drop the lock *before* serialising/sending.
             let drained = std::mem::take(&mut *buffer.lock().unwrap());
             if let Some(batch) = drain_to_batch(drained) {
@@ -383,33 +496,26 @@ impl AppState {
         let (tx, _rx) = broadcast::channel(1024);
         let buffer: PixelBuffer = Arc::new(Mutex::new(HashMap::new()));
 
-        // Coalesce the SSE fan-out onto a fixed tick (default 16ms; lower it via
-        // SSE_COALESCE_MS in tests to flush almost immediately).
-        let coalesce_ms = std::env::var("SSE_COALESCE_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(16);
-        spawn_flusher(
-            buffer.clone(),
-            tx.clone(),
-            Duration::from_millis(coalesce_ms),
-        );
-
         let settings = Arc::new(Mutex::new(Settings::default()));
+        // SSE_COALESCE_MS seeds the starting coalescing window (tests lower it to
+        // flush almost immediately); the admin can change it live afterwards.
+        if let Some(ms) = std::env::var("SSE_COALESCE_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            settings.lock().unwrap().sse_coalesce_ms = ms.max(1);
+        }
+        // Coalesce the SSE fan-out onto a tick (default 16ms). The flusher reads
+        // the live setting each tick, so admin changes apply without a restart.
+        spawn_flusher(buffer.clone(), tx.clone(), settings.clone());
 
         let mut redis = None;
         if let Some(url) = redis_url {
             if let Ok(client) = redis::Client::open(url) {
                 if let Ok(conn) = redis::aio::ConnectionManager::new(client.clone()).await {
                     let mut init = conn.clone();
-                    let blank = String::from_utf8(blank_canvas()).unwrap();
-                    let _ = redis::cmd("SETNX")
-                        .arg(CANVAS_KEY)
-                        .arg(blank)
-                        .query_async::<i64>(&mut init)
-                        .await;
-                    // Seed settings: adopt what's already in Redis (a peer set it),
-                    // otherwise publish our defaults so the key exists.
+                    // Resolve settings first — a peer may have changed the canvas
+                    // dimensions — then seed the canvas at the resolved size.
                     match redis::cmd("GET")
                         .arg(CONFIG_KEY)
                         .query_async::<Option<String>>(&mut init)
@@ -433,6 +539,16 @@ impl AppState {
                             }
                         }
                     }
+                    let (w, h) = {
+                        let s = settings.lock().unwrap();
+                        (s.width, s.height)
+                    };
+                    let blank = String::from_utf8(blank_canvas(w, h)).unwrap();
+                    let _ = redis::cmd("SETNX")
+                        .arg(CANVAS_KEY)
+                        .arg(blank)
+                        .query_async::<i64>(&mut init)
+                        .await;
                     spawn_event_subscriber(client.clone(), buffer.clone());
                     spawn_config_subscriber(client, conn.clone(), settings.clone());
                     redis = Some(conn);
@@ -445,9 +561,14 @@ impl AppState {
             .filter(|s| !s.is_empty())
             .map(Arc::new);
 
+        let (fw, fh) = {
+            let s = settings.lock().unwrap();
+            (s.width, s.height)
+        };
+
         Self {
             redis,
-            fallback: Arc::new(Mutex::new(blank_canvas())),
+            fallback: Arc::new(Mutex::new(blank_canvas(fw, fh))),
             tx,
             buffer,
             tokens: Arc::new(Mutex::new(HashSet::new())),
@@ -466,8 +587,12 @@ impl AppState {
         self.settings.lock().unwrap().clone()
     }
 
-    /// Return the whole canvas as a `WIDTH*HEIGHT` hex string.
+    /// Return the whole canvas as a `width*height` hex string.
     pub async fn canvas(&self) -> String {
+        let (width, height) = {
+            let s = self.settings.lock().unwrap();
+            (s.width, s.height)
+        };
         if let Some(conn) = &self.redis {
             let mut conn = conn.clone();
             if let Ok(Some(s)) = redis::cmd("GET")
@@ -475,7 +600,7 @@ impl AppState {
                 .query_async::<Option<String>>(&mut conn)
                 .await
             {
-                if s.len() == WIDTH * HEIGHT * BYTES_PER_PIXEL {
+                if s.len() == width * height * BYTES_PER_PIXEL {
                     return s;
                 }
             }
@@ -487,17 +612,32 @@ impl AppState {
     /// invalid. With Redis the update is published to every instance; otherwise
     /// it is broadcast in-process.
     pub async fn set_pixel(&self, x: usize, y: usize, color: &str) -> Result<(), PixelError> {
-        if x >= WIDTH || y >= HEIGHT {
+        let normalized =
+            normalize_color(color).ok_or_else(|| PixelError::InvalidColor(color.to_string()))?;
+        // Read dimensions and (if enforced) check palette membership in one lock,
+        // without cloning the palette on this hot path.
+        let (width, height, rejected) = {
+            let s = self.settings.lock().unwrap();
+            let rejected = s.enforce_palette
+                && !s
+                    .palette
+                    .iter()
+                    .any(|c| c.trim_start_matches('#') == normalized.as_str());
+            (s.width, s.height, rejected)
+        };
+        if rejected {
+            return Err(PixelError::NotInPalette(normalized));
+        }
+        if x >= width || y >= height {
             return Err(PixelError::OutOfBounds {
                 x,
                 y,
-                width: WIDTH,
-                height: HEIGHT,
+                width,
+                height,
             });
         }
-        let color =
-            normalize_color(color).ok_or_else(|| PixelError::InvalidColor(color.to_string()))?;
-        let offset = (y * WIDTH + x) * BYTES_PER_PIXEL;
+        let color = normalized;
+        let offset = (y * width + x) * BYTES_PER_PIXEL;
         let payload = format!(r#"{{"x":{x},"y":{y},"color":"{color}"}}"#);
 
         if let Some(conn) = &self.redis {
@@ -592,35 +732,39 @@ impl AppState {
             if !known {
                 return Err(ApiError::Unauthorized);
             }
-            let key = format!("rate:{token}");
-            let count: i64 = redis::cmd("INCR")
-                .arg(&key)
-                .query_async(&mut conn)
-                .await
-                .unwrap_or(1);
-            if count == 1 {
-                let _ = redis::cmd("EXPIRE")
+            if cfg.rate_limit_enabled {
+                let key = format!("rate:{token}");
+                let count: i64 = redis::cmd("INCR")
                     .arg(&key)
-                    .arg(cfg.rate_window_secs)
-                    .query_async::<i64>(&mut conn)
-                    .await;
-            }
-            if count as u64 > cfg.rate_limit {
-                return Err(ApiError::RateLimited);
+                    .query_async(&mut conn)
+                    .await
+                    .unwrap_or(1);
+                if count == 1 {
+                    let _ = redis::cmd("EXPIRE")
+                        .arg(&key)
+                        .arg(cfg.rate_window_secs)
+                        .query_async::<i64>(&mut conn)
+                        .await;
+                }
+                if count as u64 > cfg.rate_limit {
+                    return Err(ApiError::RateLimited);
+                }
             }
         } else {
             if !self.tokens.lock().unwrap().contains(token) {
                 return Err(ApiError::Unauthorized);
             }
-            let mut rates = self.rates.lock().unwrap();
-            let now = Instant::now();
-            let entry = rates.entry(token.to_string()).or_insert((0, now));
-            if now.duration_since(entry.1).as_secs() >= cfg.rate_window_secs {
-                *entry = (0, now);
-            }
-            entry.0 += 1;
-            if entry.0 > cfg.rate_limit {
-                return Err(ApiError::RateLimited);
+            if cfg.rate_limit_enabled {
+                let mut rates = self.rates.lock().unwrap();
+                let now = Instant::now();
+                let entry = rates.entry(token.to_string()).or_insert((0, now));
+                if now.duration_since(entry.1).as_secs() >= cfg.rate_window_secs {
+                    *entry = (0, now);
+                }
+                entry.0 += 1;
+                if entry.0 > cfg.rate_limit {
+                    return Err(ApiError::RateLimited);
+                }
             }
         }
         Ok(())
@@ -690,7 +834,12 @@ impl AppState {
     /// to `CONFIG_KEY` and publish on `CONFIG_CHANNEL` so every replica reloads.
     pub async fn update_settings(&self, new: Settings) -> Settings {
         let clean = new.sanitized();
-        *self.settings.lock().unwrap() = clean.clone();
+        let resized = {
+            let mut g = self.settings.lock().unwrap();
+            let changed = g.width != clean.width || g.height != clean.height;
+            *g = clean.clone();
+            changed
+        };
         if let Some(conn) = &self.redis {
             if let Ok(json) = serde_json::to_string(&clean) {
                 let mut conn = conn.clone();
@@ -705,6 +854,11 @@ impl AppState {
                     .query_async::<i64>(&mut conn)
                     .await;
             }
+        }
+        // A different canvas size is incompatible with the stored pixels, so
+        // reset the canvas to a fresh blank at the new size.
+        if resized {
+            self.clear_canvas().await;
         }
         clean
     }
@@ -745,7 +899,11 @@ impl AppState {
     /// Wipe the canvas back to white and tell every connected client to clear,
     /// so the reset is immediate rather than waiting for the next full resync.
     pub async fn clear_canvas(&self) {
-        let blank = String::from_utf8(blank_canvas()).unwrap();
+        let (width, height) = {
+            let s = self.settings.lock().unwrap();
+            (s.width, s.height)
+        };
+        let blank = String::from_utf8(blank_canvas(width, height)).unwrap();
         if let Some(conn) = &self.redis {
             let mut conn = conn.clone();
             let _ = redis::cmd("SET")
@@ -755,7 +913,7 @@ impl AppState {
                 .await;
         }
         *self.fallback.lock().unwrap() = blank.into_bytes();
-        // Sentinel batch understood by the client as "repaint blank".
+        // Sentinel understood by the client as "wipe + resync at current size".
         let _ = self.tx.send(r#"{"clear":true}"#.to_string());
     }
 
@@ -851,6 +1009,14 @@ struct Info {
     version: &'static str,
     instance: String,
     online: i64,
+    /// True when an admin has put the canvas in read-only maintenance mode.
+    paused: bool,
+    /// Whether new visitors can currently register a token.
+    registration_open: bool,
+    /// Banner text to show while `paused` is true.
+    maintenance_message: String,
+    /// Site-wide announcement (empty = none).
+    announcement: String,
 }
 
 /// Identify the running instance. In Kubernetes (and Docker) `HOSTNAME` is the
@@ -872,7 +1038,11 @@ fn instance_id() -> String {
 struct CanvasResponse {
     width: usize,
     height: usize,
-    palette: [&'static str; 16],
+    palette: Vec<String>,
+    /// Whether the native colour picker is offered (admin-toggleable).
+    picker: bool,
+    /// Whether only palette colours are accepted (server-enforced).
+    enforce: bool,
     pixels: String,
 }
 
@@ -909,28 +1079,48 @@ async fn health() -> Json<Health> {
 }
 
 async fn info(State(state): State<AppState>) -> Json<Info> {
+    let cfg = state.settings();
     Json(Info {
         name: env!("CARGO_PKG_NAME"),
         version: env!("CARGO_PKG_VERSION"),
         instance: instance_id(),
         online: state.online().await,
+        paused: cfg.paused,
+        registration_open: cfg.registration_open,
+        maintenance_message: cfg.maintenance_message,
+        announcement: cfg.announcement,
     })
 }
 
 async fn get_canvas(State(state): State<AppState>) -> Json<CanvasResponse> {
+    let cfg = state.settings();
     Json(CanvasResponse {
-        width: WIDTH,
-        height: HEIGHT,
-        palette: PALETTE,
+        width: cfg.width,
+        height: cfg.height,
+        picker: cfg.color_picker_enabled,
+        enforce: cfg.enforce_palette,
+        palette: cfg.palette,
         pixels: state.canvas().await,
     })
 }
 
-/// Issue a token. Slow on purpose (anti-abuse) — see `register_token`.
-async fn register(State(state): State<AppState>) -> Json<RegisterResponse> {
+/// Issue a token. Slow on purpose (anti-abuse) — see `register_token`. Returns
+/// 503 when an admin has closed registration.
+async fn register(State(state): State<AppState>) -> Response {
+    if !state.settings().registration_open {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                ok: false,
+                error: "registration is currently closed".into(),
+            }),
+        )
+            .into_response();
+    }
     Json(RegisterResponse {
         token: state.register_token().await,
     })
+    .into_response()
 }
 
 async fn put_pixel(
@@ -1089,13 +1279,14 @@ async fn admin_get_state(State(state): State<AppState>, headers: HeaderMap) -> R
     if let Err(e) = require_admin(&state, &headers).await {
         return e;
     }
+    let cfg = state.settings();
     Json(AdminState {
-        settings: state.settings(),
+        width: cfg.width,
+        height: cfg.height,
+        settings: cfg,
         stats: state.stats().await,
         version: env!("CARGO_PKG_VERSION"),
         instance: instance_id(),
-        width: WIDTH,
-        height: HEIGHT,
     })
     .into_response()
 }
@@ -1285,6 +1476,137 @@ mod tests {
         s.paused = true;
         state.update_settings(s).await;
         assert!(matches!(state.authorize("m").await, Err(ApiError::Paused)));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_can_be_disabled() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.rate_limit = 1;
+        s.rate_limit_enabled = false;
+        state.update_settings(s).await;
+        state.store_token("r").await;
+        // Far beyond a budget of 1 — all allowed because the limiter is off.
+        for _ in 0..10 {
+            assert!(state.authorize("r").await.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn resizing_resets_canvas_to_new_dimensions() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.width = 64;
+        s.height = 32;
+        state.update_settings(s).await;
+
+        let canvas = state.canvas().await;
+        assert_eq!(canvas.len(), 64 * 32 * BYTES_PER_PIXEL);
+        assert!(canvas.chars().all(|c| c == 'f')); // fresh blank at the new size
+
+        // The new bounds are enforced.
+        assert!(state.set_pixel(63, 31, "ff0000").await.is_ok());
+        assert!(state.set_pixel(64, 0, "ff0000").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn coalesce_window_is_tunable_and_clamped() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.sse_coalesce_ms = 50;
+        assert_eq!(state.update_settings(s).await.sse_coalesce_ms, 50);
+        // Out-of-range values are clamped (1..=1000).
+        let mut s = state.settings();
+        s.sse_coalesce_ms = 99_999;
+        assert_eq!(state.update_settings(s).await.sse_coalesce_ms, 1_000);
+    }
+
+    #[tokio::test]
+    async fn palette_keeps_only_valid_colours() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.palette = vec![
+            "#ff0000".into(), // valid
+            "00ff00".into(),  // valid, no '#'
+            "nope".into(),    // invalid
+            "#ff0000".into(), // duplicate
+        ];
+        let applied = state.update_settings(s).await;
+        assert_eq!(
+            applied.palette,
+            vec!["#ff0000".to_string(), "#00ff00".to_string()]
+        );
+
+        // An all-invalid palette falls back to the default set.
+        let mut s = state.settings();
+        s.palette = vec!["bad".into(), "".into()];
+        assert_eq!(state.update_settings(s).await.palette, default_palette());
+    }
+
+    #[tokio::test]
+    async fn enforced_palette_rejects_other_colours() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.palette = vec!["#ff0000".into(), "#00ff00".into()];
+        s.enforce_palette = true;
+        state.update_settings(s).await;
+
+        // Palette colours are accepted (case/`#` are normalised before the check).
+        assert!(state.set_pixel(0, 0, "ff0000").await.is_ok());
+        assert!(state.set_pixel(1, 0, "#00FF00").await.is_ok());
+        // Anything else is rejected at the API level, not just hidden in the UI.
+        assert!(matches!(
+            state.set_pixel(2, 0, "0000ff").await,
+            Err(PixelError::NotInPalette(_))
+        ));
+
+        // Turning enforcement off lets any valid colour through again.
+        let mut s = state.settings();
+        s.enforce_palette = false;
+        state.update_settings(s).await;
+        assert!(state.set_pixel(2, 0, "0000ff").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn registration_can_be_closed() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.registration_open = false;
+        state.update_settings(s).await;
+
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/register")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn blank_maintenance_message_falls_back_to_default() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.maintenance_message = "   ".into();
+        s.announcement = "  hello  ".into();
+        let applied = state.update_settings(s).await;
+        assert_eq!(applied.maintenance_message, default_maintenance_message());
+        assert_eq!(applied.announcement.as_str(), "hello"); // trimmed
+    }
+
+    #[tokio::test]
+    async fn canvas_size_is_clamped() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.width = 4; // below the minimum
+        s.height = 9000; // above the maximum
+        let applied = state.update_settings(s).await;
+        assert_eq!(applied.width, 8);
+        assert_eq!(applied.height, 512);
     }
 
     #[tokio::test]

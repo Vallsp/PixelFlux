@@ -189,9 +189,15 @@ Rust ([axum]) · [Nix] flake (dev shell + container) · [go-task] · [lefthook] 
 ## Admin
 
 An admin dashboard at `/admin` lets you tune the live limits (paint rate limit
-and window, registration delay, token TTL, presence timings), flip the canvas
-into read-only **maintenance mode**, **reset** the canvas, and watch live stats
-(viewers online, pixels painted, tokens issued).
+and window — or switch the rate limit off entirely, registration delay, token
+TTL, presence timings, and the **SSE coalescing window** that controls server
+fan-out), **resize the canvas** (8–512 px per side, which resets it), flip the
+canvas into read-only **maintenance mode**, **reset** the canvas, edit the
+preset **colour palette** (optionally hide the native colour picker, or
+**enforce the palette server-side** so off-palette colours are rejected by the
+API too — not just hidden in the UI), set a custom **maintenance message**, post a
+site-wide **announcement banner**, **open or close registration**, and watch
+live stats (viewers online, pixels painted, tokens issued).
 
 The admin is **disabled unless** the `ADMIN_PASSWORD` environment variable is
 set, so it is off by default. Set it to turn it on:

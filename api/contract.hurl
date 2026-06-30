@@ -15,6 +15,7 @@ HTTP 200
 jsonpath "$.width" == 200
 jsonpath "$.height" == 200
 jsonpath "$.palette" count == 16
+jsonpath "$.picker" isBoolean
 jsonpath "$.pixels" isString
 
 # Register a token (deliberately slow: ~5s anti-abuse delay)
@@ -59,3 +60,5 @@ HTTP 200
 jsonpath "$.name" == "pixelflux"
 jsonpath "$.instance" isString
 jsonpath "$.online" isInteger
+jsonpath "$.paused" isBoolean
+jsonpath "$.registration_open" isBoolean

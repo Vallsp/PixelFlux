@@ -62,7 +62,8 @@
       }
       input[type="text"],
       input[type="password"],
-      input[type="number"] {
+      input[type="number"],
+      textarea {
         width: 100%;
         padding: 0.55rem 0.7rem;
         border-radius: 8px;
@@ -71,9 +72,47 @@
         color: #e6e6e6;
         font-size: 0.9rem;
       }
-      input:focus {
+      textarea {
+        font-family: inherit;
+        resize: vertical;
+        min-height: 3rem;
+      }
+      input:focus,
+      textarea:focus {
         outline: none;
         border-color: #2f6f3a;
+      }
+      #palette-editor {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 0.4rem;
+      }
+      .pal-item {
+        position: relative;
+      }
+      .pal-item input[type="color"] {
+        width: 34px;
+        height: 34px;
+        padding: 0;
+        border: 1px solid #2a2f3a;
+        border-radius: 6px;
+        background: none;
+        cursor: pointer;
+      }
+      .pal-item button {
+        position: absolute;
+        top: -7px;
+        right: -7px;
+        width: 17px;
+        height: 17px;
+        border-radius: 50%;
+        background: #5a1d1d;
+        border: 1px solid #7a2a2a;
+        color: #ffd7d7;
+        font-size: 11px;
+        line-height: 1;
+        padding: 0;
       }
       .grid2 {
         display: grid;
@@ -147,6 +186,16 @@
         gap: 0.6rem;
         margin-top: 1rem;
       }
+      .check {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.9rem;
+        color: #c7ccd4;
+      }
+      .check input {
+        width: auto;
+      }
       .pill {
         font-size: 0.72rem;
         padding: 0.15rem 0.5rem;
@@ -217,6 +266,17 @@
 
     <div class="card hidden" id="dash-maint">
       <h2>Canevas</h2>
+      <div class="grid2">
+        <div>
+          <label for="width">Largeur <span class="sub">(px, 8–512)</span></label>
+          <input type="number" id="width" min="8" max="512" />
+        </div>
+        <div>
+          <label for="height">Hauteur <span class="sub">(px, 8–512)</span></label>
+          <input type="number" id="height" min="8" max="512" />
+        </div>
+      </div>
+      <p class="hint">⚠️ Changer la taille <strong>réinitialise le canevas</strong> (l'art actuel est perdu). Clique « Enregistrer » plus bas pour appliquer.</p>
       <div class="toggle">
         <span>Mode maintenance (lecture seule)</span>
         <span class="pill off" id="maint-pill">actif: non</span>
@@ -225,11 +285,21 @@
         <button id="maint-toggle">Basculer la maintenance</button>
         <button class="danger" id="clearbtn">Effacer le canevas</button>
       </div>
+      <label for="maintenance_message">Message de maintenance <span class="sub">(affiché aux visiteurs)</span></label>
+      <textarea id="maintenance_message" maxlength="200"></textarea>
       <p class="hint">La maintenance bloque tous les paint (HTTP 503). « Effacer » remet tout en blanc immédiatement.</p>
     </div>
 
     <div class="card hidden" id="dash-settings">
       <h2>Limites</h2>
+      <label class="check">
+        <input type="checkbox" id="rate_limit_enabled" />
+        Activer le rate limit <span class="sub">(décoché = peinture illimitée)</span>
+      </label>
+      <label class="check" style="margin-top: 0.6rem">
+        <input type="checkbox" id="registration_open" />
+        Inscriptions ouvertes <span class="sub">(décoché = /register renvoie 503)</span>
+      </label>
       <div class="grid2">
         <div>
           <label for="rate_limit">Rate limit <span class="sub">(pixels / fenêtre)</span></label>
@@ -255,12 +325,50 @@
           <label for="online_ttl_secs">TTL présence <span class="sub">(secondes)</span></label>
           <input type="number" id="online_ttl_secs" min="2" max="600" />
         </div>
+        <div>
+          <label for="sse_coalesce_ms">Coalescing SSE <span class="sub">(ms, fan-out serveur)</span></label>
+          <input type="number" id="sse_coalesce_ms" min="1" max="1000" />
+        </div>
       </div>
+      <p class="hint">Le coalescing regroupe les pixels en un batch par tick : plus la valeur est haute, moins le serveur diffuse (latence un peu plus élevée).</p>
+    </div>
+
+    <div class="card hidden" id="dash-palette">
+      <h2>Palette</h2>
+      <p class="hint">Couleurs presets proposées aux visiteurs (max 64). Clique un carré pour le modifier.</p>
+      <div id="palette-editor"></div>
       <div class="row">
-        <button class="primary" id="savebtn">Enregistrer</button>
+        <button id="palette-add">+ Ajouter une couleur</button>
+        <button id="palette-reset">Réinitialiser</button>
+      </div>
+      <label class="check" style="margin-top: 1rem">
+        <input type="checkbox" id="color_picker_enabled" />
+        Autoriser le nuancier (pipette) <span class="sub">(décoché = presets uniquement)</span>
+      </label>
+      <label class="check" style="margin-top: 0.6rem">
+        <input type="checkbox" id="enforce_palette" />
+        Imposer la palette côté serveur <span class="sub">(rejette toute couleur hors palette, même via l'API)</span>
+      </label>
+    </div>
+
+    <div class="card hidden" id="dash-comm">
+      <h2>Annonce</h2>
+      <label for="announcement">Bandeau d'annonce <span class="sub">(vide = aucun)</span></label>
+      <textarea id="announcement" maxlength="200" placeholder="ex. Event pixel art ce soir à 20h !"></textarea>
+      <div class="row">
+        <button class="primary" id="announce-send">Envoyer l'annonce</button>
+        <button id="announce-clear">Effacer l'annonce</button>
+      </div>
+      <p class="hint">Affiché à tous les visiteurs, indépendamment de la maintenance. « Envoyer » applique uniquement l'annonce.</p>
+    </div>
+
+    <div class="card hidden" id="dash-actions">
+      <div class="row" style="margin-top: 0">
+        <button class="primary" id="savebtn">Enregistrer tous les réglages</button>
         <button id="resetbtn">Recharger</button>
         <button id="logoutbtn" style="margin-left: auto">Se déconnecter</button>
       </div>
+      <p class="hint">« Enregistrer » applique l'ensemble des réglages ci-dessus (canevas + limites).</p>
     </div>
 
     <footer>Pixelflux admin · v<span id="version">—</span></footer>
@@ -269,14 +377,19 @@
     <script>
       const $ = (id) => document.getElementById(id);
       const FIELDS = [
+        "width",
+        "height",
         "rate_limit",
         "rate_window_secs",
         "register_delay_secs",
         "token_ttl_secs",
         "online_heartbeat_secs",
         "online_ttl_secs",
+        "sse_coalesce_ms",
       ];
       let paused = false;
+      let loaded = null; // last loaded full settings (for partial saves)
+      let loadedDims = null; // { width, height } last loaded, for resize confirm
       let refreshTimer = null;
 
       function toast(msg, ok = true) {
@@ -287,15 +400,62 @@
         setTimeout(() => t.classList.remove("show"), 2200);
       }
 
+      const CARDS = [
+        "dash-stats",
+        "dash-maint",
+        "dash-settings",
+        "dash-palette",
+        "dash-comm",
+        "dash-actions",
+      ];
+      const DEFAULT_PALETTE = [
+        "#ffffff", "#e4e4e4", "#888888", "#222222", "#ffa7d1", "#e50000",
+        "#e59500", "#a06a42", "#e5d900", "#94e044", "#02be01", "#00d3dd",
+        "#0083c7", "#0000ea", "#cf6ee4", "#820080",
+      ];
+
       function showDash(on) {
         $("login").classList.toggle("hidden", on);
-        ["dash-stats", "dash-maint", "dash-settings"].forEach((id) =>
-          $(id).classList.toggle("hidden", !on),
+        CARDS.forEach((id) => $(id).classList.toggle("hidden", !on));
+      }
+
+      // --- palette editor ---
+      function renderPalette(colors) {
+        const box = $("palette-editor");
+        box.innerHTML = "";
+        colors.forEach((hex) => box.appendChild(paletteItem(hex)));
+      }
+      function paletteItem(hex) {
+        const wrap = document.createElement("div");
+        wrap.className = "pal-item";
+        const input = document.createElement("input");
+        input.type = "color";
+        input.value = /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : "#ffffff";
+        const del = document.createElement("button");
+        del.textContent = "×";
+        del.title = "Retirer";
+        del.onclick = () => wrap.remove();
+        wrap.append(input, del);
+        return wrap;
+      }
+      function collectPalette() {
+        return [...document.querySelectorAll("#palette-editor input[type=color]")].map(
+          (i) => i.value,
         );
       }
 
       function fillForm(s) {
         FIELDS.forEach((f) => ($(f).value = s[f]));
+        $("rate_limit_enabled").checked = !!s.rate_limit_enabled;
+        $("registration_open").checked = !!s.registration_open;
+        $("color_picker_enabled").checked = s.color_picker_enabled !== false;
+        $("enforce_palette").checked = !!s.enforce_palette;
+        $("maintenance_message").value = s.maintenance_message || "";
+        $("announcement").value = s.announcement || "";
+        renderPalette(s.palette || DEFAULT_PALETTE);
+        $("s-size").textContent = s.width + "×" + s.height;
+        loaded = s;
+        loadedDims = { width: s.width, height: s.height };
         paused = !!s.paused;
         const pill = $("maint-pill");
         pill.textContent = "actif: " + (paused ? "oui" : "non");
@@ -342,12 +502,34 @@
       }
 
       function readForm() {
-        const s = { paused };
+        const s = {
+          paused,
+          rate_limit_enabled: $("rate_limit_enabled").checked,
+          registration_open: $("registration_open").checked,
+          color_picker_enabled: $("color_picker_enabled").checked,
+          enforce_palette: $("enforce_palette").checked,
+          maintenance_message: $("maintenance_message").value,
+          announcement: $("announcement").value,
+          palette: collectPalette(),
+        };
         FIELDS.forEach((f) => (s[f] = Number($(f).value)));
         return s;
       }
 
       async function save(settings, msg) {
+        // Resizing wipes the canvas — confirm before applying.
+        if (
+          loadedDims &&
+          (settings.width !== loadedDims.width ||
+            settings.height !== loadedDims.height)
+        ) {
+          if (
+            !confirm(
+              "Changer la taille du canevas le réinitialise (l'art actuel sera perdu). Continuer ?",
+            )
+          )
+            return;
+        }
         const r = await fetch("/admin/api/settings", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
@@ -383,6 +565,21 @@
 
       $("savebtn").onclick = () => save(readForm());
       $("resetbtn").onclick = () => loadState();
+      $("palette-add").onclick = () =>
+        $("palette-editor").appendChild(paletteItem("#ffffff"));
+      $("palette-reset").onclick = () => renderPalette(DEFAULT_PALETTE);
+
+      // Send only the announcement (on top of the last loaded settings) so it
+      // doesn't push other half-edited fields.
+      function sendAnnouncement(text, msg) {
+        if (!loaded) return;
+        $("announcement").value = text;
+        save({ ...loaded, announcement: text }, msg);
+      }
+      $("announce-send").onclick = () =>
+        sendAnnouncement($("announcement").value, "Annonce envoyée ✓");
+      $("announce-clear").onclick = () =>
+        sendAnnouncement("", "Annonce effacée ✓");
 
       $("maint-toggle").onclick = () => {
         const s = readForm();

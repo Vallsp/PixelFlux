@@ -166,6 +166,34 @@
       #status {
         color: #94e044;
       }
+      #maintbanner {
+        width: 100%;
+        max-width: 620px;
+        text-align: center;
+        padding: 0.5rem 0.8rem;
+        border-radius: 8px;
+        background: #5a1d1d;
+        border: 1px solid #7a2a2a;
+        color: #ffd7d7;
+        font-size: 0.85rem;
+      }
+      #maintbanner[hidden] {
+        display: none;
+      }
+      #announcebanner {
+        width: 100%;
+        max-width: 620px;
+        text-align: center;
+        padding: 0.5rem 0.8rem;
+        border-radius: 8px;
+        background: #16313a;
+        border: 1px solid #1f6f8b;
+        color: #cbeefb;
+        font-size: 0.85rem;
+      }
+      #announcebanner[hidden] {
+        display: none;
+      }
       #gate {
         position: fixed;
         inset: 0;
@@ -228,6 +256,8 @@
   </head>
   <body>
     <h1>🎨 Pixelflux <span class="hint">— drag to paint · scroll to zoom · space-drag to pan</span></h1>
+    <div id="announcebanner" hidden></div>
+    <div id="maintbanner" hidden>🔧 Maintenance en cours — le canevas est en lecture seule, la peinture est temporairement désactivée.</div>
     <div id="palette"></div>
     <input type="color" id="colorpicker" value="#e50000" hidden />
     <div id="zoombar">
@@ -260,7 +290,7 @@
     <div id="gate" hidden>
       <div class="gate-card">
         <h2>Rejoindre le canvas</h2>
-        <p>Un jeton anti-spam est généré côté serveur (~5&nbsp;s).</p>
+        <p id="gatemsg">Un jeton anti-spam est généré côté serveur (~5&nbsp;s).</p>
         <button id="joinbtn">Rejoindre</button>
       </div>
     </div>
@@ -269,6 +299,8 @@
       let WIDTH = 200,
         HEIGHT = 200,
         PALETTE = [],
+        pickerEnabled = true, // native colour picker offered? (admin toggle)
+        lastPalKey = "", // detect palette/picker changes to rebuild swatches
         selected = "e50000", // current colour, 6 hex digits (no '#')
         recent = JSON.parse(localStorage.getItem("pixelflux_recent") || "[]"),
         painting = false,
@@ -486,17 +518,25 @@
         paletteEl.appendChild(s);
       }
 
-      // Presets + recently picked colours (de-duplicated) + the pipette button.
+      // Presets (+ recently picked colours and the pipette, only when the admin
+      // leaves the native colour picker enabled).
       function buildPalette() {
         paletteEl.innerHTML = "";
         const seen = new Set();
-        [...PALETTE.map(noHash), ...recent].forEach((hex) => {
+        const colors = pickerEnabled
+          ? [...PALETTE.map(noHash), ...recent]
+          : PALETTE.map(noHash);
+        colors.forEach((hex) => {
           if (!seen.has(hex)) {
             seen.add(hex);
             addSwatch(hex, false);
           }
         });
-        addSwatch(null, true);
+        if (pickerEnabled) addSwatch(null, true);
+        // With the picker off, force the selection onto an available preset.
+        if (!pickerEnabled && !seen.has(selected) && colors.length) {
+          selectColor(colors[0]);
+        }
       }
 
       function selectColor(hex) {
@@ -546,11 +586,19 @@
           const data = await r.json();
           WIDTH = data.width;
           HEIGHT = data.height;
-          PALETTE = data.palette;
-          if (grid.width !== WIDTH || grid.height !== HEIGHT) {
-            buildPalette();
+          PALETTE = data.palette || [];
+          // Enforced palette also restricts the UI, regardless of the picker flag.
+          pickerEnabled = data.picker !== false && data.enforce !== true;
+          const dimsChanged = grid.width !== WIDTH || grid.height !== HEIGHT;
+          if (dimsChanged) {
             buildGrid();
             fitView();
+          }
+          // Rebuild the swatches when the palette or the picker toggle changed.
+          const palKey = JSON.stringify(PALETTE) + "|" + pickerEnabled;
+          if (dimsChanged || palKey !== lastPalKey) {
+            lastPalKey = palKey;
+            buildPalette();
           }
           render(data.pixels);
         } catch (e) {
@@ -578,6 +626,17 @@
         } else if (r.status === 429) {
           statusEl.textContent = "rate limited — slow down";
           statusEl.style.color = "#e59500";
+        } else if (r.status === 503) {
+          // Maintenance mode: show the banner and revert the optimistic pixel.
+          document.getElementById("maintbanner").hidden = false;
+          statusEl.textContent = "maintenance";
+          statusEl.style.color = "#e57373";
+          fullSync();
+        } else if (r.status === 400) {
+          // Colour rejected (palette enforced): revert the optimistic pixel.
+          statusEl.textContent = "couleur non autorisée";
+          statusEl.style.color = "#e59500";
+          fullSync();
         }
       }
 
@@ -593,6 +652,7 @@
           if (msg && msg.clear) {
             ctx.fillStyle = "#ffffff";
             ctx.fillRect(0, 0, WIDTH, HEIGHT);
+            fullSync(); // also picks up a canvas resize immediately
             return;
           }
           // Otherwise it's a coalesced batch (array) of pixel updates.
@@ -617,6 +677,22 @@
           document.getElementById("instance").textContent = d.instance;
           document.getElementById("version").textContent = d.version;
           document.getElementById("online").textContent = d.online;
+          // Show/hide the maintenance banner from the live server state.
+          const mb = document.getElementById("maintbanner");
+          mb.hidden = !d.paused;
+          if (d.paused) {
+            if (d.maintenance_message) mb.textContent = "🔧 " + d.maintenance_message;
+            statusEl.textContent = "maintenance";
+            statusEl.style.color = "#e57373";
+          } else if (statusEl.textContent === "maintenance") {
+            statusEl.textContent = "live"; // maintenance lifted
+            statusEl.style.color = "#94e044";
+          }
+          // Site-wide announcement (independent of maintenance).
+          const ab = document.getElementById("announcebanner");
+          const ann = (d.announcement || "").trim();
+          ab.hidden = ann === "";
+          if (ann) ab.textContent = "📢 " + ann;
         } catch (e) {
           /* keep last value */
         }
@@ -631,6 +707,12 @@
         joinBtn.innerHTML = '<span class="spinner"></span> Connexion… (~5 s)';
         try {
           const r = await fetch("/register", { method: "POST" });
+          if (r.status === 503) {
+            // Registration closed by an admin.
+            document.getElementById("gatemsg").textContent =
+              "Les inscriptions sont temporairement fermées.";
+            return;
+          }
           const d = await r.json();
           token = d.token;
           localStorage.setItem("pixelflux_token", token);
