@@ -15,7 +15,7 @@
 //! in-process.
 
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -27,9 +27,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, Stream, StreamExt};
 
@@ -46,6 +45,12 @@ const TOKEN_TTL_SECS: u64 = 86_400;
 /// Per-token paint budget within a rolling window.
 const RATE_LIMIT: u64 = 4096;
 const RATE_WINDOW_SECS: u64 = 30;
+
+/// Live-viewer tracking: each connected tab refreshes its entry every
+/// `ONLINE_HEARTBEAT_SECS`; entries older than `ONLINE_TTL_SECS` are pruned, so
+/// dead pods and dropped tabs self-heal instead of leaking the count.
+const ONLINE_HEARTBEAT_SECS: u64 = 5;
+const ONLINE_TTL_SECS: i64 = 15;
 
 /// 16-colour palette (index = hex char stored per pixel).
 pub const PALETTE: [&str; 16] = [
@@ -116,6 +121,14 @@ fn blank_canvas() -> Vec<u8> {
 
 fn hex_char(color: u8) -> Option<u8> {
     std::char::from_digit(color as u32, 16).map(|c| c as u8)
+}
+
+/// Current Unix time in seconds (used as the heartbeat score for viewers).
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Pending pixel updates, keyed by `(x, y)` so a cell repainted within the same
@@ -198,8 +211,8 @@ pub struct AppState {
     tokens: Arc<Mutex<HashSet<String>>>,
     /// Per-token paint counts + window start (fallback rate limiter).
     rates: Arc<Mutex<HashMap<String, (u64, Instant)>>>,
-    /// Live-viewer count (used only when Redis is unavailable).
-    online: Arc<AtomicI64>,
+    /// Live viewers by connection id → last heartbeat (fallback when no Redis).
+    online: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl AppState {
@@ -249,7 +262,7 @@ impl AppState {
             buffer,
             tokens: Arc::new(Mutex::new(HashSet::new())),
             rates: Arc::new(Mutex::new(HashMap::new())),
-            online: Arc::new(AtomicI64::new(0)),
+            online: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -392,37 +405,63 @@ impl AppState {
         Ok(())
     }
 
-    /// Count of currently connected viewers (open SSE streams). Shared across
-    /// replicas via Redis, or per-instance in the fallback.
-    async fn online_add(&self, delta: i64) {
+    /// Mark a viewer (by connection id) as seen now. Called on connect and on
+    /// each heartbeat. In Redis this is a sorted set scored by timestamp, shared
+    /// across replicas; otherwise an in-process map.
+    async fn online_seen(&self, cid: &str) {
         if let Some(conn) = &self.redis {
             let mut conn = conn.clone();
-            let cmd = if delta >= 0 { "INCRBY" } else { "DECRBY" };
-            let _ = redis::cmd(cmd)
-                .arg("online")
-                .arg(delta.abs())
+            let _ = redis::cmd("ZADD")
+                .arg("viewers")
+                .arg(now_secs())
+                .arg(cid)
                 .query_async::<i64>(&mut conn)
                 .await;
         } else {
-            self.online.fetch_add(delta, Ordering::Relaxed);
+            self.online
+                .lock()
+                .unwrap()
+                .insert(cid.to_string(), Instant::now());
         }
     }
 
-    /// Current number of connected viewers (never negative).
-    pub async fn online(&self) -> i64 {
-        let n = if let Some(conn) = &self.redis {
+    /// Remove a viewer immediately when its connection closes cleanly.
+    async fn online_gone(&self, cid: &str) {
+        if let Some(conn) = &self.redis {
             let mut conn = conn.clone();
-            redis::cmd("GET")
-                .arg("online")
-                .query_async::<Option<i64>>(&mut conn)
+            let _ = redis::cmd("ZREM")
+                .arg("viewers")
+                .arg(cid)
+                .query_async::<i64>(&mut conn)
+                .await;
+        } else {
+            self.online.lock().unwrap().remove(cid);
+        }
+    }
+
+    /// Current number of connected viewers. Prunes entries whose heartbeat went
+    /// stale first, so dropped tabs and dead pods don't inflate the count.
+    pub async fn online(&self) -> i64 {
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let cutoff = now_secs() - ONLINE_TTL_SECS;
+            let _ = redis::cmd("ZREMRANGEBYSCORE")
+                .arg("viewers")
+                .arg("-inf")
+                .arg(cutoff)
+                .query_async::<i64>(&mut conn)
+                .await;
+            redis::cmd("ZCARD")
+                .arg("viewers")
+                .query_async::<i64>(&mut conn)
                 .await
-                .ok()
-                .flatten()
                 .unwrap_or(0)
         } else {
-            self.online.load(Ordering::Relaxed)
-        };
-        n.max(0)
+            let ttl = Duration::from_secs(ONLINE_TTL_SECS as u64);
+            let mut map = self.online.lock().unwrap();
+            map.retain(|_, seen| seen.elapsed() < ttl);
+            map.len() as i64
+        }
     }
 
     /// Subscribe to the live pixel event stream (the same feed used by SSE).
@@ -548,25 +587,54 @@ async fn put_pixel(
     Ok(Json(PixelResponse { ok: true }))
 }
 
-/// Decrements the live-viewer count when its SSE connection is dropped.
+/// Stops the heartbeat and removes the viewer when its SSE connection is dropped.
 struct OnlineGuard {
     state: AppState,
+    cid: String,
+    heartbeat: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for OnlineGuard {
     fn drop(&mut self) {
+        self.heartbeat.abort();
         let state = self.state.clone();
-        tokio::spawn(async move { state.online_add(-1).await });
+        let cid = self.cid.clone();
+        tokio::spawn(async move { state.online_gone(&cid).await });
     }
+}
+
+/// Optional stable connection id (one per browser tab) so reconnects of the same
+/// tab don't count as new viewers.
+#[derive(Deserialize)]
+struct EventsParams {
+    cid: Option<String>,
 }
 
 async fn sse_events(
     State(state): State<AppState>,
+    Query(params): Query<EventsParams>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    state.online_add(1).await;
-    // Tie a guard to the stream so the count drops when the client disconnects.
+    let cid = params
+        .cid
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    state.online_seen(&cid).await;
+
+    // Refresh the heartbeat while connected; the guard stops it and removes the
+    // viewer when the stream is dropped.
+    let hb_state = state.clone();
+    let hb_cid = cid.clone();
+    let heartbeat = tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(ONLINE_HEARTBEAT_SECS));
+        loop {
+            tick.tick().await;
+            hb_state.online_seen(&hb_cid).await;
+        }
+    });
+
     let guard = OnlineGuard {
         state: state.clone(),
+        cid,
+        heartbeat,
     };
     let stream = state.events().map(move |ev| {
         let _ = &guard; // keep the guard alive for the stream's lifetime

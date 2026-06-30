@@ -155,6 +155,14 @@ paths:
     get:
       summary: Live pixel updates (Server-Sent Events)
       operationId: streamEvents
+      parameters:
+        - in: query
+          name: cid
+          required: false
+          schema: { type: string }
+          description: >-
+            Stable per-tab connection id so reconnects don't inflate the live
+            viewer count. Generated server-side if omitted.
       responses:
         "200":
           description: text/event-stream of painted pixels

@@ -260,6 +260,14 @@
         painting = false,
         token = localStorage.getItem("pixelflux_token") || "";
 
+      // Stable id per browser tab so SSE reconnects don't inflate the viewer count.
+      const cid =
+        sessionStorage.getItem("pixelflux_cid") ||
+        (crypto.randomUUID
+          ? crypto.randomUUID()
+          : String(Date.now()) + Math.random());
+      sessionStorage.setItem("pixelflux_cid", cid);
+
       const grid = document.getElementById("grid");
       const ctx = grid.getContext("2d");
       const paletteEl = document.getElementById("palette");
@@ -535,7 +543,7 @@
       }
 
       function connect() {
-        const es = new EventSource("/api/events");
+        const es = new EventSource("/api/events?cid=" + encodeURIComponent(cid));
         es.onopen = () => {
           statusEl.textContent = "live";
           statusEl.style.color = "#94e044";
