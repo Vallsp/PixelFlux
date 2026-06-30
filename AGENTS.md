@@ -54,16 +54,16 @@ Run `task` with no arguments to list everything. The ones you'll use most:
 
 ## Where things are
 
-| Path           | What                                                                         |
-| -------------- | ---------------------------------------------------------------------------- |
-| `src/`         | Rust app (`lib.rs` = canvas + routes, `main.rs`, `index.html` = embedded UI) |
-| `api/`         | OpenAPI spec + Hurl contract tests                                           |
-| `load/`        | k6 load test                                                                 |
-| `k8s/`         | Kubernetes manifests + Traefik                                               |
-| `argocd/`      | Argo CD GitOps Application                                                   |
-| `docs/`        | ADRs (`docs/adr/`) + the mdBook documentation site (`docs/book/`)            |
-| `flake.nix`    | Dev shell + container build                                                  |
-| `Taskfile.yml` | Every task                                                                   |
+| Path           | What                                                                                                         |
+| -------------- | ------------------------------------------------------------------------------------------------------------ |
+| `src/`         | Rust app (`lib.rs` = canvas + routes, `main.rs`, `index.html` = embedded UI, `admin.html` = admin dashboard) |
+| `api/`         | OpenAPI spec + Hurl contract tests                                                                           |
+| `load/`        | k6 load test                                                                                                 |
+| `k8s/`         | Kubernetes manifests + Traefik                                                                               |
+| `argocd/`      | Argo CD GitOps Application                                                                                   |
+| `docs/`        | ADRs (`docs/adr/`) + the mdBook documentation site (`docs/book/`)                                            |
+| `flake.nix`    | Dev shell + container build                                                                                  |
+| `Taskfile.yml` | Every task                                                                                                   |
 
 ## Before you finish a change
 

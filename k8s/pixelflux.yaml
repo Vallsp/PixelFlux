@@ -33,6 +33,17 @@ spec:
               value: "3000"
             - name: REDIS_URL
               value: "redis://redis:6379"
+            # Enables the /admin dashboard. Optional: if the secret is absent the
+            # value is empty and the admin stays disabled (secure by default).
+            # Create it with:
+            #   kubectl create secret generic pixelflux-admin \
+            #     --from-literal=password='a-long-random-secret'
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pixelflux-admin
+                  key: password
+                  optional: true
           readinessProbe:
             httpGet:
               path: /health

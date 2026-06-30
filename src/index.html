@@ -588,8 +588,15 @@
           statusEl.style.color = "#94e044";
         };
         es.onmessage = (ev) => {
-          // Events are coalesced server-side: each message is a batch (array).
-          for (const { x, y, color } of JSON.parse(ev.data)) {
+          const msg = JSON.parse(ev.data);
+          // Admin reset: wipe the canvas to white immediately.
+          if (msg && msg.clear) {
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(0, 0, WIDTH, HEIGHT);
+            return;
+          }
+          // Otherwise it's a coalesced batch (array) of pixel updates.
+          for (const { x, y, color } of msg) {
             setCell(y * WIDTH + x, color);
           }
         };

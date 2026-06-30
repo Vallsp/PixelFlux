@@ -148,7 +148,18 @@ paths:
                   ok: { type: boolean, example: false }
                   error: { type: string }
         "429":
-          description: Rate limit exceeded (max 4096 pixels per 30s per token)
+          description: >-
+            Rate limit exceeded. The budget (pixels per window) is configurable
+            from the admin page; it defaults to 4096 pixels per 30s per token.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: false }
+                  error: { type: string }
+        "503":
+          description: Canvas is in maintenance mode (read-only), set by an admin
           content:
             application/json:
               schema:
@@ -178,4 +189,147 @@ paths:
                 description: >-
                   Each event's data is a coalesced batch — a JSON array
                   [{"x":int,"y":int,"color":int}, ...] flushed on a fixed tick
-                  (default 16ms, SSE_COALESCE_MS).
+                  (default 16ms, SSE_COALESCE_MS). A reset event is the object
+                  {"clear":true}.
+  /admin:
+    get:
+      summary: Admin dashboard (HTML)
+      description: >-
+        Single-page admin UI. Requires the server to be started with the
+        ADMIN_PASSWORD environment variable; otherwise all /admin/api endpoints
+        return 401. Authentication is a session cookie set by POST /admin/login.
+      operationId: getAdmin
+      responses:
+        "200":
+          description: HTML page
+          content:
+            text/html:
+              schema: { type: string }
+  /admin/login:
+    post:
+      summary: Open an admin session
+      operationId: adminLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string }
+      responses:
+        "200":
+          description: >-
+            Authenticated. Sets an HttpOnly, SameSite=Strict `admin_session`
+            cookie used by the other /admin/api endpoints.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "401":
+          description: Invalid password or admin disabled
+  /admin/logout:
+    post:
+      summary: Close the admin session
+      operationId: adminLogout
+      responses:
+        "200":
+          description: Session invalidated and cookie cleared
+  /admin/api/state:
+    get:
+      summary: Current settings + live stats
+      operationId: adminState
+      responses:
+        "200":
+          description: Settings, stats and instance info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings: { $ref: "#/components/schemas/Settings" }
+                  stats:
+                    type: object
+                    properties:
+                      pixels_painted: { type: integer }
+                      tokens_issued: { type: integer }
+                      online: { type: integer }
+                  version: { type: string }
+                  instance: { type: string }
+                  width: { type: integer, example: 200 }
+                  height: { type: integer, example: 200 }
+        "401":
+          description: Not authenticated
+  /admin/api/settings:
+    put:
+      summary: Update runtime settings (applied fleet-wide)
+      operationId: adminUpdateSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/Settings" }
+      responses:
+        "200":
+          description: The applied settings (server clamps out-of-range values)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+        "401":
+          description: Not authenticated
+  /admin/api/canvas/clear:
+    post:
+      summary: Reset the canvas to white
+      operationId: adminClearCanvas
+      responses:
+        "200":
+          description: Canvas wiped; a clear event is broadcast to all clients
+        "401":
+          description: Not authenticated
+components:
+  schemas:
+    Settings:
+      type: object
+      required:
+        - rate_limit
+        - rate_window_secs
+        - register_delay_secs
+        - token_ttl_secs
+        - online_heartbeat_secs
+        - online_ttl_secs
+        - paused
+      properties:
+        rate_limit:
+          type: integer
+          description: Max pixels per token per window (1–1000000)
+          example: 4096
+        rate_window_secs:
+          type: integer
+          description: Rate-limit window in seconds (1–3600)
+          example: 30
+        register_delay_secs:
+          type: integer
+          description: Anti-abuse delay when issuing a token, seconds (0–60)
+          example: 5
+        token_ttl_secs:
+          type: integer
+          description: Token validity in seconds (60–2592000)
+          example: 86400
+        online_heartbeat_secs:
+          type: integer
+          description: Viewer heartbeat interval, seconds (1–300)
+          example: 5
+        online_ttl_secs:
+          type: integer
+          description: Viewer entry expiry, seconds (2–600)
+          example: 15
+        paused:
+          type: boolean
+          description: Maintenance mode — when true, painting returns 503
+          example: false

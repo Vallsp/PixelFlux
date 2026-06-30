@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pixelflux — admin</title>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: system-ui, sans-serif;
+        background: #0f1115;
+        color: #e6e6e6;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 1.2rem;
+        gap: 1rem;
+      }
+      a {
+        color: #94e044;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.25rem;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .hint {
+        color: #9aa0aa;
+        font-size: 0.8rem;
+        font-weight: 400;
+      }
+      .card {
+        background: #171a21;
+        border: 1px solid #2a2f3a;
+        border-radius: 12px;
+        padding: 1.2rem 1.4rem;
+        width: 100%;
+        max-width: 640px;
+      }
+      .card h2 {
+        margin: 0 0 0.9rem;
+        font-size: 1rem;
+      }
+      label {
+        display: block;
+        font-size: 0.85rem;
+        color: #c7ccd4;
+        margin: 0.75rem 0 0.3rem;
+      }
+      label .sub {
+        color: #6b7280;
+        font-size: 0.75rem;
+      }
+      input[type="text"],
+      input[type="password"],
+      input[type="number"] {
+        width: 100%;
+        padding: 0.55rem 0.7rem;
+        border-radius: 8px;
+        border: 1px solid #2a2f3a;
+        background: #0f1115;
+        color: #e6e6e6;
+        font-size: 0.9rem;
+      }
+      input:focus {
+        outline: none;
+        border-color: #2f6f3a;
+      }
+      .grid2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0 1rem;
+      }
+      @media (max-width: 520px) {
+        .grid2 {
+          grid-template-columns: 1fr;
+        }
+      }
+      button {
+        cursor: pointer;
+        border-radius: 8px;
+        border: 1px solid #2a2f3a;
+        background: #171a21;
+        color: #e6e6e6;
+        font-size: 0.9rem;
+        padding: 0.55rem 1rem;
+        transition: background 0.12s, border-color 0.12s, transform 0.08s;
+      }
+      button:hover {
+        background: #1f242e;
+        transform: translateY(-1px);
+      }
+      button.primary {
+        background: #2f6f3a;
+        border-color: #2f6f3a;
+        color: #fff;
+      }
+      button.danger {
+        background: #5a1d1d;
+        border-color: #7a2a2a;
+        color: #ffd7d7;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        transform: none;
+      }
+      .row {
+        display: flex;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+        margin-top: 1rem;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 0.7rem;
+      }
+      .stat {
+        background: #0f1115;
+        border: 1px solid #2a2f3a;
+        border-radius: 10px;
+        padding: 0.7rem 0.8rem;
+      }
+      .stat .v {
+        font-size: 1.35rem;
+        font-weight: 600;
+      }
+      .stat .k {
+        color: #9aa0aa;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .toggle {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin-top: 1rem;
+      }
+      .pill {
+        font-size: 0.72rem;
+        padding: 0.15rem 0.5rem;
+        border-radius: 999px;
+        border: 1px solid #2a2f3a;
+      }
+      .pill.on {
+        background: #5a1d1d;
+        border-color: #7a2a2a;
+        color: #ffd7d7;
+      }
+      .pill.off {
+        background: #1d3a23;
+        border-color: #2f6f3a;
+        color: #cdebd3;
+      }
+      #toast {
+        position: fixed;
+        bottom: 1rem;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #1f242e;
+        border: 1px solid #2a2f3a;
+        padding: 0.55rem 1rem;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        opacity: 0;
+        transition: opacity 0.2s;
+        pointer-events: none;
+      }
+      #toast.show {
+        opacity: 1;
+      }
+      .hidden {
+        display: none !important;
+      }
+      footer {
+        color: #6b7280;
+        font-size: 0.8rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🛠️ Pixelflux admin <span class="hint" id="instance"></span></h1>
+
+    <!-- Login -->
+    <div class="card" id="login">
+      <h2>Connexion admin</h2>
+      <label for="pwd">Mot de passe</label>
+      <input type="password" id="pwd" autocomplete="current-password" placeholder="••••••••" />
+      <div class="row">
+        <button class="primary" id="loginbtn">Se connecter</button>
+        <a href="/" style="align-self: center">← retour au canvas</a>
+      </div>
+      <p class="hint" id="loginerr" style="color: #e57373"></p>
+    </div>
+
+    <!-- Dashboard -->
+    <div class="card hidden" id="dash-stats">
+      <h2>Statistiques</h2>
+      <div class="stats">
+        <div class="stat"><div class="v" id="s-online">—</div><div class="k">👥 en ligne</div></div>
+        <div class="stat"><div class="v" id="s-pixels">—</div><div class="k">🎨 pixels peints</div></div>
+        <div class="stat"><div class="v" id="s-tokens">—</div><div class="k">🎟️ tokens émis</div></div>
+        <div class="stat"><div class="v" id="s-size">—</div><div class="k">📐 canevas</div></div>
+      </div>
+    </div>
+
+    <div class="card hidden" id="dash-maint">
+      <h2>Canevas</h2>
+      <div class="toggle">
+        <span>Mode maintenance (lecture seule)</span>
+        <span class="pill off" id="maint-pill">actif: non</span>
+      </div>
+      <div class="row">
+        <button id="maint-toggle">Basculer la maintenance</button>
+        <button class="danger" id="clearbtn">Effacer le canevas</button>
+      </div>
+      <p class="hint">La maintenance bloque tous les paint (HTTP 503). « Effacer » remet tout en blanc immédiatement.</p>
+    </div>
+
+    <div class="card hidden" id="dash-settings">
+      <h2>Limites</h2>
+      <div class="grid2">
+        <div>
+          <label for="rate_limit">Rate limit <span class="sub">(pixels / fenêtre)</span></label>
+          <input type="number" id="rate_limit" min="1" max="1000000" />
+        </div>
+        <div>
+          <label for="rate_window_secs">Fenêtre <span class="sub">(secondes)</span></label>
+          <input type="number" id="rate_window_secs" min="1" max="3600" />
+        </div>
+        <div>
+          <label for="register_delay_secs">Délai d'enregistrement <span class="sub">(s, anti-spam)</span></label>
+          <input type="number" id="register_delay_secs" min="0" max="60" />
+        </div>
+        <div>
+          <label for="token_ttl_secs">TTL token <span class="sub">(secondes)</span></label>
+          <input type="number" id="token_ttl_secs" min="60" max="2592000" />
+        </div>
+        <div>
+          <label for="online_heartbeat_secs">Heartbeat présence <span class="sub">(secondes)</span></label>
+          <input type="number" id="online_heartbeat_secs" min="1" max="300" />
+        </div>
+        <div>
+          <label for="online_ttl_secs">TTL présence <span class="sub">(secondes)</span></label>
+          <input type="number" id="online_ttl_secs" min="2" max="600" />
+        </div>
+      </div>
+      <div class="row">
+        <button class="primary" id="savebtn">Enregistrer</button>
+        <button id="resetbtn">Recharger</button>
+        <button id="logoutbtn" style="margin-left: auto">Se déconnecter</button>
+      </div>
+    </div>
+
+    <footer>Pixelflux admin · v<span id="version">—</span></footer>
+    <div id="toast"></div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const FIELDS = [
+        "rate_limit",
+        "rate_window_secs",
+        "register_delay_secs",
+        "token_ttl_secs",
+        "online_heartbeat_secs",
+        "online_ttl_secs",
+      ];
+      let paused = false;
+      let refreshTimer = null;
+
+      function toast(msg, ok = true) {
+        const t = $("toast");
+        t.textContent = msg;
+        t.style.borderColor = ok ? "#2f6f3a" : "#7a2a2a";
+        t.classList.add("show");
+        setTimeout(() => t.classList.remove("show"), 2200);
+      }
+
+      function showDash(on) {
+        $("login").classList.toggle("hidden", on);
+        ["dash-stats", "dash-maint", "dash-settings"].forEach((id) =>
+          $(id).classList.toggle("hidden", !on),
+        );
+      }
+
+      function fillForm(s) {
+        FIELDS.forEach((f) => ($(f).value = s[f]));
+        paused = !!s.paused;
+        const pill = $("maint-pill");
+        pill.textContent = "actif: " + (paused ? "oui" : "non");
+        pill.className = "pill " + (paused ? "on" : "off");
+      }
+
+      function renderState(d) {
+        fillForm(d.settings);
+        $("s-online").textContent = d.stats.online;
+        $("s-pixels").textContent = d.stats.pixels_painted.toLocaleString();
+        $("s-tokens").textContent = d.stats.tokens_issued.toLocaleString();
+        $("s-size").textContent = d.width + "×" + d.height;
+        $("version").textContent = d.version;
+        $("instance").textContent = "· " + d.instance;
+      }
+
+      async function loadState() {
+        const r = await fetch("/admin/api/state");
+        if (r.status === 401) {
+          showDash(false);
+          stopRefresh();
+          return false;
+        }
+        renderState(await r.json());
+        showDash(true);
+        return true;
+      }
+
+      function startRefresh() {
+        stopRefresh();
+        refreshTimer = setInterval(async () => {
+          // Only refresh stats live; don't stomp on fields being edited.
+          const r = await fetch("/admin/api/state");
+          if (r.status === 401) return showDash(false), stopRefresh();
+          const d = await r.json();
+          $("s-online").textContent = d.stats.online;
+          $("s-pixels").textContent = d.stats.pixels_painted.toLocaleString();
+          $("s-tokens").textContent = d.stats.tokens_issued.toLocaleString();
+        }, 4000);
+      }
+      function stopRefresh() {
+        if (refreshTimer) clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
+
+      function readForm() {
+        const s = { paused };
+        FIELDS.forEach((f) => (s[f] = Number($(f).value)));
+        return s;
+      }
+
+      async function save(settings, msg) {
+        const r = await fetch("/admin/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(settings),
+        });
+        if (!r.ok) return toast("Échec de l'enregistrement", false);
+        fillForm(await r.json()); // server clamps values; reflect what stuck
+        toast(msg || "Enregistré ✓");
+      }
+
+      $("loginbtn").onclick = async () => {
+        $("loginerr").textContent = "";
+        $("loginbtn").disabled = true;
+        try {
+          const r = await fetch("/admin/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password: $("pwd").value }),
+          });
+          if (!r.ok) {
+            $("loginerr").textContent = "Mot de passe invalide.";
+            return;
+          }
+          $("pwd").value = "";
+          if (await loadState()) startRefresh();
+        } finally {
+          $("loginbtn").disabled = false;
+        }
+      };
+      $("pwd").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") $("loginbtn").click();
+      });
+
+      $("savebtn").onclick = () => save(readForm());
+      $("resetbtn").onclick = () => loadState();
+
+      $("maint-toggle").onclick = () => {
+        const s = readForm();
+        s.paused = !paused;
+        save(s, s.paused ? "Maintenance activée" : "Maintenance désactivée");
+      };
+
+      $("clearbtn").onclick = async () => {
+        if (!confirm("Effacer tout le canevas ? Cette action est irréversible.")) return;
+        const r = await fetch("/admin/api/canvas/clear", { method: "POST" });
+        toast(r.ok ? "Canevas effacé ✓" : "Échec", r.ok);
+      };
+
+      $("logoutbtn").onclick = async () => {
+        await fetch("/admin/logout", { method: "POST" });
+        stopRefresh();
+        showDash(false);
+      };
+
+      (async function start() {
+        if (await loadState()) startRefresh();
+      })();
+    </script>
+  </body>
+</html>

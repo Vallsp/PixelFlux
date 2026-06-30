@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published to GHCR on push to `main`.
 - Kubernetes deployment: Traefik load balancing, 3 replicas, HPA, and
   automatic HTTPS via Let's Encrypt; Argo CD Application for GitOps.
+- Admin dashboard at `/admin` (enabled by `ADMIN_PASSWORD`): runtime-tunable
+  limits (rate limit/window, registration delay, token TTL, presence timings),
+  read-only maintenance mode, canvas reset, and live stats. Settings persist in
+  Redis and propagate to every replica via a `config:events` pub/sub channel.
+  Auth uses a constant-time password check and an `HttpOnly`, `SameSite=Strict`
+  session cookie.
 - Documentation: README with diagrams, CONTRIBUTING, per-directory READMEs,
   AGENTS.md, and Architecture Decision Records.
 

@@ -180,8 +180,33 @@ Rust ([axum]) · [Nix] flake (dev shell + container) · [go-task] · [lefthook] 
 | GET    | `/api/canvas` | Whole canvas                        |
 | POST   | `/api/pixel`  | Paint a pixel `{x, y, color}`       |
 | GET    | `/api/events` | Live pixel stream (SSE)             |
+| GET    | `/admin`      | Admin dashboard (needs a password)  |
 
 <!-- ANCHOR_END: api -->
+
+<!-- ANCHOR: admin -->
+
+## Admin
+
+An admin dashboard at `/admin` lets you tune the live limits (paint rate limit
+and window, registration delay, token TTL, presence timings), flip the canvas
+into read-only **maintenance mode**, **reset** the canvas, and watch live stats
+(viewers online, pixels painted, tokens issued).
+
+The admin is **disabled unless** the `ADMIN_PASSWORD` environment variable is
+set, so it is off by default. Set it to turn it on:
+
+```bash
+ADMIN_PASSWORD='a-long-random-secret' task run    # then open /admin
+```
+
+Login opens a short-lived, `HttpOnly` `SameSite=Strict` session cookie; the
+password is compared in constant time and never stored. Settings are persisted
+in Redis and propagated to every replica over a `config:events` pub/sub channel,
+so a change applies fleet-wide instantly (in-memory when Redis is absent). In
+Kubernetes, supply `ADMIN_PASSWORD` from a Secret and serve `/admin` over HTTPS.
+
+<!-- ANCHOR_END: admin -->
 
 <!-- ANCHOR: deploy -->
 

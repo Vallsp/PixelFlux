@@ -15,11 +15,14 @@ executable contract test suite.
 | POST   | `/register`   | Issue a paint token → `{"token"}`. Deliberately slow (~5s) to make mass token creation expensive                                                                  |
 | POST   | `/api/pixel`  | Paint one pixel → header `X-Token` + body `{"x", "y", "color"}` (`color` = `rrggbb` hex) → `{"ok": true}` (400 invalid · 401 no/unknown token · 429 rate limited) |
 | GET    | `/api/events` | Live pixel stream (SSE); each event is a coalesced **batch** — a JSON array `[{"x","y","color"}, …]` flushed on a tick (default 16 ms, `SSE_COALESCE_MS`)         |
+| GET    | `/admin`      | Admin dashboard (enabled only when `ADMIN_PASSWORD` is set); tune limits, maintenance mode, reset canvas, live stats                                              |
 
 The canvas is **200×200** in **full RGB** — each pixel is any `rrggbb` colour
 (16M colours); the `palette` field just gives default preset swatches for the UI.
-Painting requires a token from `/register` (sent as `X-Token`), and is limited to
-**4096 pixels per token per 30 s**.
+Painting requires a token from `/register` (sent as `X-Token`), and is rate
+limited (default **4096 pixels per token per 30 s**). The rate limit, window and
+other tunables are editable at runtime from the admin page; when maintenance mode
+is on, painting returns **503**.
 
 ## Try it
 

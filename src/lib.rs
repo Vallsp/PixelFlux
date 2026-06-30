@@ -16,12 +16,12 @@
 
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse, Response,
     },
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -41,21 +41,92 @@ const BYTES_PER_PIXEL: usize = 6;
 // canvas (1 hex/pixel), so use a fresh key rather than corrupt the old one.
 const CANVAS_KEY: &str = "canvas:rgb";
 const EVENTS_CHANNEL: &str = "canvas:events";
+/// Redis key holding the live, admin-tunable settings (JSON).
+const CONFIG_KEY: &str = "config";
+/// Pub/sub channel: a message here tells every instance to reload `CONFIG_KEY`,
+/// so an admin change propagates across all replicas (same pattern as pixels).
+const CONFIG_CHANNEL: &str = "config:events";
+/// Redis counters for the admin dashboard.
+const STATS_PIXELS_KEY: &str = "stats:pixels";
+const STATS_TOKENS_KEY: &str = "stats:tokens";
+/// Prefix for server-side admin session tokens (Redis: `admin:session:{id}`).
+const ADMIN_SESSION_PREFIX: &str = "admin:session:";
+/// Admin session lifetime.
+const ADMIN_SESSION_TTL_SECS: u64 = 3_600;
+
+// Defaults for the runtime-tunable `Settings`. The live values are held in
+// `AppState` (and Redis); these are only the starting point.
 
 /// Registration is deliberately slow so minting tokens en masse is expensive
 /// (you can't just create a fresh user on every paint request).
-const REGISTER_DELAY: Duration = Duration::from_secs(5);
+const DEFAULT_REGISTER_DELAY_SECS: u64 = 5;
 /// How long an issued token stays valid server-side (clients re-register on 401).
-const TOKEN_TTL_SECS: u64 = 86_400;
+const DEFAULT_TOKEN_TTL_SECS: u64 = 86_400;
 /// Per-token paint budget within a rolling window.
-const RATE_LIMIT: u64 = 4096;
-const RATE_WINDOW_SECS: u64 = 30;
+const DEFAULT_RATE_LIMIT: u64 = 4096;
+const DEFAULT_RATE_WINDOW_SECS: u64 = 30;
 
 /// Live-viewer tracking: each connected tab refreshes its entry every
-/// `ONLINE_HEARTBEAT_SECS`; entries older than `ONLINE_TTL_SECS` are pruned, so
+/// `online_heartbeat_secs`; entries older than `online_ttl_secs` are pruned, so
 /// dead pods and dropped tabs self-heal instead of leaking the count.
-const ONLINE_HEARTBEAT_SECS: u64 = 5;
-const ONLINE_TTL_SECS: i64 = 15;
+const DEFAULT_ONLINE_HEARTBEAT_SECS: u64 = 5;
+const DEFAULT_ONLINE_TTL_SECS: i64 = 15;
+
+/// Runtime-tunable settings, editable from the admin page and shared across
+/// replicas via Redis. Each value mirrors a former compile-time constant.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Settings {
+    /// Max pixels a token may paint per `rate_window_secs`.
+    pub rate_limit: u64,
+    /// Length of the rolling rate-limit window, in seconds.
+    pub rate_window_secs: u64,
+    /// Artificial delay applied when issuing a token, in seconds (anti-abuse).
+    pub register_delay_secs: u64,
+    /// How long an issued token stays valid, in seconds.
+    pub token_ttl_secs: u64,
+    /// Viewer heartbeat interval, in seconds.
+    pub online_heartbeat_secs: u64,
+    /// Viewer entry expiry, in seconds.
+    pub online_ttl_secs: i64,
+    /// Maintenance switch: when true the canvas is read-only (paint → 503).
+    pub paused: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            rate_limit: DEFAULT_RATE_LIMIT,
+            rate_window_secs: DEFAULT_RATE_WINDOW_SECS,
+            register_delay_secs: DEFAULT_REGISTER_DELAY_SECS,
+            token_ttl_secs: DEFAULT_TOKEN_TTL_SECS,
+            online_heartbeat_secs: DEFAULT_ONLINE_HEARTBEAT_SECS,
+            online_ttl_secs: DEFAULT_ONLINE_TTL_SECS,
+            paused: false,
+        }
+    }
+}
+
+impl Settings {
+    /// Clamp incoming values to sane bounds so the admin can't brick the app
+    /// (e.g. a zero window that divides by nothing, or absurd delays).
+    fn sanitized(mut self) -> Self {
+        self.rate_limit = self.rate_limit.clamp(1, 1_000_000);
+        self.rate_window_secs = self.rate_window_secs.clamp(1, 3_600);
+        self.register_delay_secs = self.register_delay_secs.min(60);
+        self.token_ttl_secs = self.token_ttl_secs.clamp(60, 2_592_000);
+        self.online_heartbeat_secs = self.online_heartbeat_secs.clamp(1, 300);
+        self.online_ttl_secs = self.online_ttl_secs.clamp(2, 600);
+        self
+    }
+}
+
+/// Live counters surfaced on the admin dashboard.
+#[derive(Clone, Debug, Serialize)]
+pub struct Stats {
+    pub pixels_painted: u64,
+    pub tokens_issued: u64,
+    pub online: i64,
+}
 
 /// Default preset colours offered as quick swatches in the UI. Pixels can be
 /// any RGB colour; these are just convenient starting points.
@@ -99,8 +170,10 @@ pub enum ApiError {
     Pixel(#[from] PixelError),
     #[error("missing or unknown token — register first")]
     Unauthorized,
-    #[error("rate limit exceeded — max 4096 pixels per 30s per token")]
+    #[error("rate limit exceeded — too many pixels in the current window")]
     RateLimited,
+    #[error("canvas is in maintenance mode (read-only)")]
+    Paused,
 }
 
 impl IntoResponse for ApiError {
@@ -109,6 +182,7 @@ impl IntoResponse for ApiError {
             ApiError::Pixel(_) => StatusCode::BAD_REQUEST,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
             ApiError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ApiError::Paused => StatusCode::SERVICE_UNAVAILABLE,
         };
         (
             status,
@@ -143,6 +217,33 @@ fn now_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+/// Length-aware constant-time byte comparison, to avoid leaking the admin
+/// password via timing on the login path.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Pull the `admin_session` value out of the request's `Cookie` header.
+fn admin_session_cookie(headers: &HeaderMap) -> String {
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| {
+            raw.split(';').find_map(|c| {
+                let (k, v) = c.trim().split_once('=')?;
+                (k == "admin_session").then(|| v.to_string())
+            })
+        })
+        .unwrap_or_default()
 }
 
 /// Pending pixel updates, keyed by `(x, y)` so a cell repainted within the same
@@ -213,6 +314,39 @@ fn spawn_event_subscriber(client: redis::Client, buffer: PixelBuffer) {
     });
 }
 
+/// Background task: when an admin changes the settings, a message is published
+/// on `CONFIG_CHANNEL`; every instance listens and reloads `CONFIG_KEY` into its
+/// in-memory `settings` so the change takes effect fleet-wide. Reconnects on
+/// failure.
+fn spawn_config_subscriber(
+    client: redis::Client,
+    conn: redis::aio::ConnectionManager,
+    settings: Arc<Mutex<Settings>>,
+) {
+    tokio::spawn(async move {
+        loop {
+            if let Ok(mut pubsub) = client.get_async_pubsub().await {
+                if pubsub.subscribe(CONFIG_CHANNEL).await.is_ok() {
+                    let mut stream = pubsub.on_message();
+                    while stream.next().await.is_some() {
+                        let mut c = conn.clone();
+                        if let Ok(Some(json)) = redis::cmd("GET")
+                            .arg(CONFIG_KEY)
+                            .query_async::<Option<String>>(&mut c)
+                            .await
+                        {
+                            if let Ok(s) = serde_json::from_str::<Settings>(&json) {
+                                *settings.lock().unwrap() = s.sanitized();
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    });
+}
+
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
@@ -227,6 +361,15 @@ pub struct AppState {
     rates: Arc<Mutex<HashMap<String, (u64, Instant)>>>,
     /// Live viewers by connection id → last heartbeat (fallback when no Redis).
     online: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Runtime-tunable settings (admin-editable, shared across replicas).
+    settings: Arc<Mutex<Settings>>,
+    /// Cumulative counters (fallback when no Redis).
+    pixels_painted: Arc<Mutex<u64>>,
+    tokens_issued: Arc<Mutex<u64>>,
+    /// Active admin sessions → issued-at (fallback when no Redis).
+    admin_sessions: Arc<Mutex<HashMap<String, Instant>>>,
+    /// Admin password from `ADMIN_PASSWORD`; `None` disables the admin entirely.
+    admin_password: Option<Arc<String>>,
 }
 
 impl AppState {
@@ -252,6 +395,8 @@ impl AppState {
             Duration::from_millis(coalesce_ms),
         );
 
+        let settings = Arc::new(Mutex::new(Settings::default()));
+
         let mut redis = None;
         if let Some(url) = redis_url {
             if let Ok(client) = redis::Client::open(url) {
@@ -263,11 +408,42 @@ impl AppState {
                         .arg(blank)
                         .query_async::<i64>(&mut init)
                         .await;
-                    spawn_event_subscriber(client, buffer.clone());
+                    // Seed settings: adopt what's already in Redis (a peer set it),
+                    // otherwise publish our defaults so the key exists.
+                    match redis::cmd("GET")
+                        .arg(CONFIG_KEY)
+                        .query_async::<Option<String>>(&mut init)
+                        .await
+                    {
+                        Ok(Some(json)) => {
+                            if let Ok(s) = serde_json::from_str::<Settings>(&json) {
+                                *settings.lock().unwrap() = s.sanitized();
+                            }
+                        }
+                        _ => {
+                            // Serialise into a String first so the MutexGuard is
+                            // dropped before we await the Redis write.
+                            let json = serde_json::to_string(&*settings.lock().unwrap()).ok();
+                            if let Some(json) = json {
+                                let _ = redis::cmd("SET")
+                                    .arg(CONFIG_KEY)
+                                    .arg(json)
+                                    .query_async::<String>(&mut init)
+                                    .await;
+                            }
+                        }
+                    }
+                    spawn_event_subscriber(client.clone(), buffer.clone());
+                    spawn_config_subscriber(client, conn.clone(), settings.clone());
                     redis = Some(conn);
                 }
             }
         }
+
+        let admin_password = std::env::var("ADMIN_PASSWORD")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(Arc::new);
 
         Self {
             redis,
@@ -277,7 +453,17 @@ impl AppState {
             tokens: Arc::new(Mutex::new(HashSet::new())),
             rates: Arc::new(Mutex::new(HashMap::new())),
             online: Arc::new(Mutex::new(HashMap::new())),
+            settings,
+            pixels_painted: Arc::new(Mutex::new(0)),
+            tokens_issued: Arc::new(Mutex::new(0)),
+            admin_sessions: Arc::new(Mutex::new(HashMap::new())),
+            admin_password,
         }
+    }
+
+    /// A snapshot of the current runtime settings.
+    pub fn settings(&self) -> Settings {
+        self.settings.lock().unwrap().clone()
     }
 
     /// Return the whole canvas as a `WIDTH*HEIGHT` hex string.
@@ -330,6 +516,10 @@ impl AppState {
                     .arg(&payload)
                     .query_async::<i64>(&mut conn)
                     .await;
+                let _ = redis::cmd("INCR")
+                    .arg(STATS_PIXELS_KEY)
+                    .query_async::<i64>(&mut conn)
+                    .await;
                 return Ok(());
             }
         }
@@ -343,31 +533,39 @@ impl AppState {
             .lock()
             .unwrap()
             .insert((x as u16, y as u16), color);
+        *self.pixels_painted.lock().unwrap() += 1;
         Ok(())
     }
 
     /// Persist a token (Redis when available so every replica accepts it,
     /// otherwise in-process). No artificial delay — see `register_token`.
     async fn store_token(&self, token: &str) {
+        let ttl = self.settings().token_ttl_secs;
         if let Some(conn) = &self.redis {
             let mut conn = conn.clone();
             let _ = redis::cmd("SET")
                 .arg(format!("token:{token}"))
                 .arg(1)
                 .arg("EX")
-                .arg(TOKEN_TTL_SECS)
+                .arg(ttl)
                 .query_async::<String>(&mut conn)
+                .await;
+            let _ = redis::cmd("INCR")
+                .arg(STATS_TOKENS_KEY)
+                .query_async::<i64>(&mut conn)
                 .await;
         } else {
             self.tokens.lock().unwrap().insert(token.to_string());
+            *self.tokens_issued.lock().unwrap() += 1;
         }
     }
 
-    /// Issue a fresh random token. Deliberately slow (`REGISTER_DELAY`) so a
+    /// Issue a fresh random token. Deliberately slow (`register_delay_secs`) so a
     /// client can't cheaply mint a new identity on every paint request.
     pub async fn register_token(&self) -> String {
         let token = uuid::Uuid::new_v4().to_string();
-        tokio::time::sleep(REGISTER_DELAY).await;
+        let delay = self.settings().register_delay_secs;
+        tokio::time::sleep(Duration::from_secs(delay)).await;
         self.store_token(&token).await;
         token
     }
@@ -378,6 +576,11 @@ impl AppState {
     pub async fn authorize(&self, token: &str) -> Result<(), ApiError> {
         if token.is_empty() {
             return Err(ApiError::Unauthorized);
+        }
+        let cfg = self.settings();
+        // Maintenance mode: reject paints fleet-wide, regardless of token.
+        if cfg.paused {
+            return Err(ApiError::Paused);
         }
         if let Some(conn) = &self.redis {
             let mut conn = conn.clone();
@@ -398,11 +601,11 @@ impl AppState {
             if count == 1 {
                 let _ = redis::cmd("EXPIRE")
                     .arg(&key)
-                    .arg(RATE_WINDOW_SECS)
+                    .arg(cfg.rate_window_secs)
                     .query_async::<i64>(&mut conn)
                     .await;
             }
-            if count as u64 > RATE_LIMIT {
+            if count as u64 > cfg.rate_limit {
                 return Err(ApiError::RateLimited);
             }
         } else {
@@ -412,11 +615,11 @@ impl AppState {
             let mut rates = self.rates.lock().unwrap();
             let now = Instant::now();
             let entry = rates.entry(token.to_string()).or_insert((0, now));
-            if now.duration_since(entry.1).as_secs() >= RATE_WINDOW_SECS {
+            if now.duration_since(entry.1).as_secs() >= cfg.rate_window_secs {
                 *entry = (0, now);
             }
             entry.0 += 1;
-            if entry.0 > RATE_LIMIT {
+            if entry.0 > cfg.rate_limit {
                 return Err(ApiError::RateLimited);
             }
         }
@@ -460,9 +663,10 @@ impl AppState {
     /// Current number of connected viewers. Prunes entries whose heartbeat went
     /// stale first, so dropped tabs and dead pods don't inflate the count.
     pub async fn online(&self) -> i64 {
+        let ttl_secs = self.settings().online_ttl_secs;
         if let Some(conn) = &self.redis {
             let mut conn = conn.clone();
-            let cutoff = now_secs() - ONLINE_TTL_SECS;
+            let cutoff = now_secs() - ttl_secs;
             let _ = redis::cmd("ZREMRANGEBYSCORE")
                 .arg("viewers")
                 .arg("-inf")
@@ -475,10 +679,147 @@ impl AppState {
                 .await
                 .unwrap_or(0)
         } else {
-            let ttl = Duration::from_secs(ONLINE_TTL_SECS as u64);
+            let ttl = Duration::from_secs(ttl_secs.max(0) as u64);
             let mut map = self.online.lock().unwrap();
             map.retain(|_, seen| seen.elapsed() < ttl);
             map.len() as i64
+        }
+    }
+
+    /// Apply new settings: clamp them, store in-memory, and (with Redis) persist
+    /// to `CONFIG_KEY` and publish on `CONFIG_CHANNEL` so every replica reloads.
+    pub async fn update_settings(&self, new: Settings) -> Settings {
+        let clean = new.sanitized();
+        *self.settings.lock().unwrap() = clean.clone();
+        if let Some(conn) = &self.redis {
+            if let Ok(json) = serde_json::to_string(&clean) {
+                let mut conn = conn.clone();
+                let _ = redis::cmd("SET")
+                    .arg(CONFIG_KEY)
+                    .arg(json)
+                    .query_async::<String>(&mut conn)
+                    .await;
+                let _ = redis::cmd("PUBLISH")
+                    .arg(CONFIG_CHANNEL)
+                    .arg("changed")
+                    .query_async::<i64>(&mut conn)
+                    .await;
+            }
+        }
+        clean
+    }
+
+    /// Live counters for the admin dashboard.
+    pub async fn stats(&self) -> Stats {
+        let online = self.online().await;
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let pixels: i64 = redis::cmd("GET")
+                .arg(STATS_PIXELS_KEY)
+                .query_async::<Option<i64>>(&mut conn)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+            let tokens: i64 = redis::cmd("GET")
+                .arg(STATS_TOKENS_KEY)
+                .query_async::<Option<i64>>(&mut conn)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(0);
+            Stats {
+                pixels_painted: pixels.max(0) as u64,
+                tokens_issued: tokens.max(0) as u64,
+                online,
+            }
+        } else {
+            Stats {
+                pixels_painted: *self.pixels_painted.lock().unwrap(),
+                tokens_issued: *self.tokens_issued.lock().unwrap(),
+                online,
+            }
+        }
+    }
+
+    /// Wipe the canvas back to white and tell every connected client to clear,
+    /// so the reset is immediate rather than waiting for the next full resync.
+    pub async fn clear_canvas(&self) {
+        let blank = String::from_utf8(blank_canvas()).unwrap();
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let _ = redis::cmd("SET")
+                .arg(CANVAS_KEY)
+                .arg(&blank)
+                .query_async::<String>(&mut conn)
+                .await;
+        }
+        *self.fallback.lock().unwrap() = blank.into_bytes();
+        // Sentinel batch understood by the client as "repaint blank".
+        let _ = self.tx.send(r#"{"clear":true}"#.to_string());
+    }
+
+    /// Whether an admin password is configured (admin is disabled otherwise).
+    pub fn admin_enabled(&self) -> bool {
+        self.admin_password.is_some()
+    }
+
+    /// Validate a password in constant time and, on success, mint and store an
+    /// opaque session id. Returns the session id, or `None` if disabled/wrong.
+    pub async fn admin_login(&self, password: &str) -> Option<String> {
+        let expected = self.admin_password.as_ref()?;
+        if !constant_time_eq(password.as_bytes(), expected.as_bytes()) {
+            return None;
+        }
+        let sid = format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let _ = redis::cmd("SET")
+                .arg(format!("{ADMIN_SESSION_PREFIX}{sid}"))
+                .arg(1)
+                .arg("EX")
+                .arg(ADMIN_SESSION_TTL_SECS)
+                .query_async::<String>(&mut conn)
+                .await;
+        } else {
+            self.admin_sessions
+                .lock()
+                .unwrap()
+                .insert(sid.clone(), Instant::now());
+        }
+        Some(sid)
+    }
+
+    /// True if `sid` is a currently-valid admin session.
+    pub async fn admin_check(&self, sid: &str) -> bool {
+        if self.admin_password.is_none() || sid.is_empty() {
+            return false;
+        }
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            redis::cmd("EXISTS")
+                .arg(format!("{ADMIN_SESSION_PREFIX}{sid}"))
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(false)
+        } else {
+            let ttl = Duration::from_secs(ADMIN_SESSION_TTL_SECS);
+            let mut map = self.admin_sessions.lock().unwrap();
+            map.retain(|_, t| t.elapsed() < ttl);
+            map.contains_key(sid)
+        }
+    }
+
+    /// Invalidate an admin session (logout).
+    pub async fn admin_logout(&self, sid: &str) {
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let _ = redis::cmd("DEL")
+                .arg(format!("{ADMIN_SESSION_PREFIX}{sid}"))
+                .query_async::<i64>(&mut conn)
+                .await;
+        } else {
+            self.admin_sessions.lock().unwrap().remove(sid);
         }
     }
 
@@ -642,8 +983,9 @@ async fn sse_events(
     // viewer when the stream is dropped.
     let hb_state = state.clone();
     let hb_cid = cid.clone();
+    let hb_secs = state.settings().online_heartbeat_secs.max(1);
     let heartbeat = tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(ONLINE_HEARTBEAT_SECS));
+        let mut tick = tokio::time::interval(Duration::from_secs(hb_secs));
         loop {
             tick.tick().await;
             hb_state.online_seen(&hb_cid).await;
@@ -662,6 +1004,122 @@ async fn sse_events(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+// ---------------------------------------------------------------------------
+// Admin
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct LoginRequest {
+    password: String,
+}
+
+#[derive(Serialize)]
+struct OkResponse {
+    ok: bool,
+}
+
+/// Everything the admin dashboard needs in one round-trip.
+#[derive(Serialize)]
+struct AdminState {
+    settings: Settings,
+    stats: Stats,
+    version: &'static str,
+    instance: String,
+    width: usize,
+    height: usize,
+}
+
+async fn admin_page() -> Html<&'static str> {
+    Html(include_str!("admin.html"))
+}
+
+/// Reject the request unless it carries a valid admin session cookie.
+async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
+    let sid = admin_session_cookie(headers);
+    if state.admin_check(&sid).await {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                ok: false,
+                error: "unauthorized".into(),
+            }),
+        )
+            .into_response())
+    }
+}
+
+async fn admin_login(State(state): State<AppState>, Json(req): Json<LoginRequest>) -> Response {
+    match state.admin_login(&req.password).await {
+        Some(sid) => {
+            let cookie = format!(
+                "admin_session={sid}; HttpOnly; SameSite=Strict; Path=/admin; Max-Age={ADMIN_SESSION_TTL_SECS}"
+            );
+            let mut resp = Json(OkResponse { ok: true }).into_response();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&cookie) {
+                resp.headers_mut().insert(axum::http::header::SET_COOKIE, v);
+            }
+            resp
+        }
+        None => (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                ok: false,
+                error: "invalid password".into(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let sid = admin_session_cookie(&headers);
+    state.admin_logout(&sid).await;
+    let clear = "admin_session=; HttpOnly; SameSite=Strict; Path=/admin; Max-Age=0";
+    let mut resp = Json(OkResponse { ok: true }).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::SET_COOKIE,
+        axum::http::HeaderValue::from_static(clear),
+    );
+    resp
+}
+
+async fn admin_get_state(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e;
+    }
+    Json(AdminState {
+        settings: state.settings(),
+        stats: state.stats().await,
+        version: env!("CARGO_PKG_VERSION"),
+        instance: instance_id(),
+        width: WIDTH,
+        height: HEIGHT,
+    })
+    .into_response()
+}
+
+async fn admin_update_settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(new): Json<Settings>,
+) -> Response {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e;
+    }
+    let applied = state.update_settings(new).await;
+    Json(applied).into_response()
+}
+
+async fn admin_clear_canvas(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e;
+    }
+    state.clear_canvas().await;
+    Json(OkResponse { ok: true }).into_response()
+}
+
 /// Build the application router.
 pub fn app(state: AppState) -> Router {
     Router::new()
@@ -672,6 +1130,12 @@ pub fn app(state: AppState) -> Router {
         .route("/register", post(register))
         .route("/api/pixel", post(put_pixel))
         .route("/api/events", get(sse_events))
+        .route("/admin", get(admin_page))
+        .route("/admin/login", post(admin_login))
+        .route("/admin/logout", post(admin_logout))
+        .route("/admin/api/state", get(admin_get_state))
+        .route("/admin/api/settings", put(admin_update_settings))
+        .route("/admin/api/canvas/clear", post(admin_clear_canvas))
         .with_state(state)
 }
 
@@ -772,15 +1236,99 @@ mod tests {
             Err(ApiError::Unauthorized)
         ));
         // A known token is accepted up to the budget, then rate-limited.
-        // (store_token skips the deliberate 5s registration delay.)
+        // (store_token skips the deliberate registration delay.)
         state.store_token("t").await;
-        for _ in 0..RATE_LIMIT {
+        for _ in 0..DEFAULT_RATE_LIMIT {
             assert!(state.authorize("t").await.is_ok());
         }
         assert!(matches!(
             state.authorize("t").await,
             Err(ApiError::RateLimited)
         ));
+    }
+
+    #[tokio::test]
+    async fn settings_update_changes_rate_limit() {
+        let state = AppState::new(None).await;
+        // Tighten the budget to 2 paints per window at runtime.
+        let mut s = state.settings();
+        s.rate_limit = 2;
+        let applied = state.update_settings(s).await;
+        assert_eq!(applied.rate_limit, 2);
+
+        state.store_token("u").await;
+        assert!(state.authorize("u").await.is_ok());
+        assert!(state.authorize("u").await.is_ok());
+        assert!(matches!(
+            state.authorize("u").await,
+            Err(ApiError::RateLimited)
+        ));
+    }
+
+    #[tokio::test]
+    async fn settings_are_clamped() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.rate_limit = 0; // invalid -> clamped to >= 1
+        s.rate_window_secs = 0; // invalid -> clamped to >= 1
+        let applied = state.update_settings(s).await;
+        assert!(applied.rate_limit >= 1);
+        assert!(applied.rate_window_secs >= 1);
+    }
+
+    #[tokio::test]
+    async fn maintenance_mode_blocks_painting() {
+        let state = AppState::new(None).await;
+        state.store_token("m").await;
+        assert!(state.authorize("m").await.is_ok());
+        let mut s = state.settings();
+        s.paused = true;
+        state.update_settings(s).await;
+        assert!(matches!(state.authorize("m").await, Err(ApiError::Paused)));
+    }
+
+    #[tokio::test]
+    async fn admin_is_disabled_without_password() {
+        // No ADMIN_PASSWORD in this test's env -> admin features are off.
+        let state = AppState::new(None).await;
+        assert!(!state.admin_enabled());
+        assert!(state.admin_login("anything").await.is_none());
+        assert!(!state.admin_check("whatever").await);
+    }
+
+    #[tokio::test]
+    async fn admin_api_requires_auth() {
+        let response = app(AppState::new(None).await)
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/api/state")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_page_is_served() {
+        let response = app(AppState::new(None).await)
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn constant_time_eq_matches_only_equal_bytes() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(!constant_time_eq(b"secret", b"secrev"));
+        assert!(!constant_time_eq(b"secret", b"secre"));
     }
 
     #[tokio::test]

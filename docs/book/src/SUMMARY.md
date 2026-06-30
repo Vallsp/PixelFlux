@@ -5,6 +5,7 @@
 - [Getting Started](getting-started.md)
 - [Architecture](architecture.md)
 - [API Reference](api.md)
+- [Admin](admin.md)
 - [Deployment](deployment/kubernetes.md)
   - [GitOps with Argo CD](deployment/argocd.md)
 - [Testing & Load](testing.md)
