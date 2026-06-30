@@ -35,9 +35,11 @@ Rust · axum · Redis · SSE · Nix · Kubernetes · GitOps
 
 ### Bascule vers l'application en direct →
 
-Peindre · synchro en temps réel · le pied de page (version + pod)
+## [ik-clicker.com](https://ik-clicker.com)
 
-<!-- Note : Basculer sur le navigateur, l'application déjà ouverte. Déroulé : (1) deux onglets côte à côte ; (2) peindre dans l'un, le pixel apparaît instantanément dans l'autre ; (3) pointer le pied de page : la version vient du build, et l'identifiant du pod change à chaque rafraîchissement car Traefik répartit la charge sur trois réplicas ; (4) au besoin, un troisième onglet pour montrer la diffusion à plusieurs clients. Plan B si le réseau flanche : une capture d'écran. Puis revenir aux diapositives. -->
+Essayez-le : peignez · synchro en temps réel · le pied de page (version + pod)
+
+<!-- Note : Inviter le public à ouvrir ik-clicker.com sur leur téléphone pour peindre en même temps — la synchro à plusieurs est plus parlante en direct. Basculer sur le navigateur, l'application déjà ouverte. Déroulé : (1) deux onglets côte à côte ; (2) peindre dans l'un, le pixel apparaît instantanément dans l'autre ; (3) pointer le pied de page : la version vient du build, et l'identifiant du pod change à chaque rafraîchissement car Traefik répartit la charge sur trois réplicas. Plan B si le réseau flanche : une capture d'écran. Puis revenir aux diapositives. -->
 
 ---
 
@@ -145,6 +147,18 @@ Chaque push et chaque PR passent par le **même `nix develop`** sur GitHub Actio
 - Tourne sur **k3s + Traefik**, HTTPS via Let's Encrypt, mise à l'échelle par un **HPA**.
 
 <!-- Note : La livraison est en mode pull. Je pousse sur main, la CI publie une nouvelle image, et Image Updater repère le nouveau digest et met à jour l'application Argo, qui déroule le déploiement — je ne lance jamais kubectl apply à la main. Aucun identifiant n'est nécessaire car tout est public et la réécriture utilise le RBAC interne au cluster. Les mêmes manifestes montent le TLS et l'autoscaling. -->
+
+---
+
+# Architecture Kubernetes
+
+![bg right:58% fit](img/k8s-architecture.svg)
+
+- **Traefik** route le trafic HTTP/HTTPS vers le **Service**.
+- Le **Deployment** tient 3 réplicas sans état ; l'**HPA** monte jusqu'à 10.
+- Chaque pod dialogue avec **Redis** (état + pub/sub).
+
+<!-- Note : Voici la topologie de déploiement. Le trafic entre par Traefik, qui termine le TLS et répartit en tourniquet sur le Service. Le Service vise les trois pods du Deployment ; le HorizontalPodAutoscaler ajoute des pods jusqu'à dix selon la charge CPU. Comme les pods sont sans état, ils dialoguent tous avec Redis, qui détient l'état du canevas et le bus pub/sub — c'est lui qui synchronise les instances. -->
 
 ---
 
