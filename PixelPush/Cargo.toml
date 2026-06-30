@@ -1,0 +1,22 @@
+[package]
+name = "pixelpush"
+version = "0.1.0"
+edition = "2021"
+description = "Paint an image onto a PixelFlux canvas via its HTTP API"
+
+[dependencies]
+image = "0.25"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+# rustls (no OpenSSL system dep) + HTTP/2 multiplexing for the live TLS board.
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "http2",
+] }
+
+[profile.release]
+opt-level = 3
+
+# Standalone crate — keep it out of the parent pixelflux package's workspace.
+[workspace]

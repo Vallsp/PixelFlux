@@ -62,6 +62,26 @@ tasks:
     cmds:
       - cargo run
 
+  pixelpush:build:
+    desc: Compile the PixelPush helper CLI
+    sources:
+      - ./PixelPush/src/**/*.rs
+      - ./PixelPush/Cargo.*
+    cmds:
+      - cargo build --manifest-path PixelPush/Cargo.toml
+
+  pixelpush:run:
+    desc: Run PixelPush (pass image/options after --)
+    cmds:
+      - cargo run --manifest-path PixelPush/Cargo.toml -- {{.CLI_ARGS}}
+
+  pixelpush:check:
+    desc: Format, lint, and test PixelPush
+    cmds:
+      - cargo fmt --manifest-path PixelPush/Cargo.toml -- --check
+      - cargo clippy --manifest-path PixelPush/Cargo.toml --all-targets --all-features -- -D warnings
+      - cargo test --manifest-path PixelPush/Cargo.toml
+
   # --- Quality -----------------------------------------------------------
   fmt:
     desc: Auto-format every file type (treefmt)
