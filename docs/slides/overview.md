@@ -20,12 +20,12 @@ Rust · axum · Redis · SSE · Nix · Kubernetes · GitOps
 
 # De quoi s'agit-il
 
-- Un **canevas de 64×64 pixels** multijoueur : on choisit une couleur, on peint une case, tout le monde la voit aussitôt.
+- Un **canevas de 200×200 pixels** multijoueur : on choisit une couleur, on peint une case, tout le monde la voit aussitôt.
 - Back-end **Rust / axum** ; le canevas vit dans **Redis** ; mises à jour en direct via **Server-Sent Events**.
 - Volontairement minimal — l'application est le prétexte, **le pipeline d'ingénierie est le sujet**.
 - Un seul dépôt contient tout : code, infrastructure, documentation et ces slides.
 
-<!-- Note : Les fonctionnalités sont volontairement réduites pour que rien ne détourne l'attention de l'ingénierie. Une grille 64×64, seize couleurs, une synchro en temps réel. En gardant le domaine trivial, ce qui est évalué, c'est le build system, les tests, les analyses de sécurité et le pipeline de delivery. -->
+<!-- Note : Les fonctionnalités sont volontairement réduites pour que rien ne détourne l'attention de l'ingénierie. Une grille 200×200, seize couleurs, une synchro en temps réel. En gardant le domaine trivial, ce qui est évalué, c'est le build system, les tests, les analyses de sécurité et le pipeline de delivery. -->
 
 ---
 
@@ -61,7 +61,7 @@ Navigateur ──HTTP──▶  axum  ──┐
 
 # Modèle de données et API
 
-- Canevas = **4096 cases**, chacune un index 4 bits dans une **palette de 16 couleurs**, stockées dans Redis.
+- Canevas = **40 000 cases**, chacune un index 4 bits dans une **palette de 16 couleurs**, stockées dans Redis.
 - Une surface HTTP réduite et explicite :
   - `GET /api/canvas` — snapshot complet · `POST /api/pixel` — peindre une case
   - `GET /api/events` — flux **SSE** des modifications en direct

@@ -31,8 +31,8 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, Stream, StreamExt};
 
-pub const WIDTH: usize = 64;
-pub const HEIGHT: usize = 64;
+pub const WIDTH: usize = 200;
+pub const HEIGHT: usize = 200;
 const CANVAS_KEY: &str = "canvas";
 const EVENTS_CHANNEL: &str = "canvas:events";
 
@@ -397,7 +397,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_string(response).await;
-        assert!(body.contains(r#""width":64"#), "got: {body}");
-        assert!(body.contains(r#""height":64"#), "got: {body}");
+        assert!(body.contains(r#""width":200"#), "got: {body}");
+        assert!(body.contains(r#""height":200"#), "got: {body}");
     }
 }

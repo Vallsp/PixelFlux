@@ -62,8 +62,8 @@ paths:
                 type: object
                 required: [width, height, palette, pixels]
                 properties:
-                  width: { type: integer, example: 64 }
-                  height: { type: integer, example: 64 }
+                  width: { type: integer, example: 200 }
+                  height: { type: integer, example: 200 }
                   palette:
                     type: array
                     items: { type: string }
@@ -104,7 +104,7 @@ paths:
                   ok: { type: boolean, example: false }
                   error:
                     type: string
-                    example: coordinates (99, 0) out of bounds (64×64)
+                    example: coordinates (99, 0) out of bounds (200×200)
   /api/events:
     get:
       summary: Live pixel updates (Server-Sent Events)

@@ -6,7 +6,7 @@ other agents.
 
 ## What this is
 
-A collaborative 64×64 pixel canvas (Rust / axum), with real-time updates over
+A collaborative 200×200 pixel canvas (Rust / axum), with real-time updates over
 SSE + Redis pub/sub, wrapped in a full SDLC pipeline (Nix dev shell, distroless
 container, multi-level tests, security scans, CI, and a Kubernetes deployment).
 

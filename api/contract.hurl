@@ -12,8 +12,8 @@ jsonpath "$.status" == "ok"
 GET {{host}}/api/canvas
 HTTP 200
 [Asserts]
-jsonpath "$.width" == 64
-jsonpath "$.height" == 64
+jsonpath "$.width" == 200
+jsonpath "$.height" == 200
 jsonpath "$.palette" count == 16
 jsonpath "$.pixels" isString
 

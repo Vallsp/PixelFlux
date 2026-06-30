@@ -13,19 +13,25 @@
       }
       body {
         margin: 0;
-        min-height: 100vh;
+        height: 100vh;
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 1rem;
-        padding: 1.5rem;
+        gap: 0.4rem;
+        padding: 0.4rem;
         font-family: system-ui, sans-serif;
         background: #0f1115;
         color: #e6e6e6;
+        overflow: hidden;
       }
       h1 {
         margin: 0;
-        font-size: 1.4rem;
+        font-size: 1.1rem;
+      }
+      .hint {
+        font-size: 0.78rem;
+        font-weight: 400;
+        color: #9aa0aa;
       }
       p.sub {
         margin: 0;
@@ -52,23 +58,64 @@
         border-color: #fff;
         transform: scale(1.12);
       }
-      #grid {
-        display: grid;
-        gap: 1px;
-        padding: 1px;
+      #zoombar {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      #zoombar button {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        border: 1px solid #2a2f3a;
+        background: #171a21;
+        color: #e6e6e6;
+        font-size: 1.1rem;
+        cursor: pointer;
+      }
+      #zoombar button:hover {
+        background: #1f242e;
+      }
+      #zoombar button.active {
+        background: #2f6f3a;
+        border-color: #94e044;
+      }
+      #zoomlevel {
+        min-width: 3.4rem;
+        text-align: center;
+        color: #9aa0aa;
+        font-size: 0.85rem;
+      }
+      #viewport {
+        flex: 1 1 auto;
+        width: 100%;
+        min-height: 0;
+        position: relative;
+        overflow: hidden;
         background: #2a2f3a;
         border-radius: 6px;
         touch-action: none;
-        user-select: none;
-      }
-      .cell {
-        width: 9px;
-        height: 9px;
         cursor: crosshair;
       }
-      .cell:hover {
-        outline: 2px solid #ffffffaa;
-        outline-offset: -2px;
+      #grid {
+        position: absolute;
+        top: 0;
+        left: 0;
+        transform-origin: 0 0;
+        image-rendering: pixelated;
+        background: #2a2f3a;
+        touch-action: none;
+        user-select: none;
+      }
+      #gridlines {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.12s;
+        background-image:
+          linear-gradient(to right, rgba(255, 255, 255, 0.14) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255, 255, 255, 0.14) 1px, transparent 1px);
       }
       .links {
         display: flex;
@@ -109,12 +156,19 @@
     </style>
   </head>
   <body>
-    <h1>🎨 Pixelflux</h1>
-    <p class="sub">
-      Pick a colour, click or drag on the grid to paint.
-    </p>
+    <h1>🎨 Pixelflux <span class="hint">— drag to paint · scroll to zoom · space-drag to pan</span></h1>
     <div id="palette"></div>
-    <div id="grid"></div>
+    <div id="zoombar">
+      <button id="zoomout" title="Zoom out">−</button>
+      <span id="zoomlevel">100%</span>
+      <button id="zoomin" title="Zoom in">+</button>
+      <button id="zoomfit" title="Fit to screen">⤢</button>
+      <button id="movemode" title="Move mode — drag to pan (or right-drag anytime)">✋</button>
+    </div>
+    <div id="viewport">
+      <canvas id="grid"></canvas>
+      <div id="gridlines"></div>
+    </div>
     <nav class="links">
       <a href="https://vallsp.github.io/PixelFlux/" target="_blank" rel="noopener">
         <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -132,17 +186,203 @@
     <footer>Pixelflux · v<span id="version">—</span> · status: <span id="status">connecting…</span> · served by <span id="instance">—</span></footer>
 
     <script>
-      const PIXEL = 9;
-      let WIDTH = 64,
-        HEIGHT = 64,
+      let WIDTH = 200,
+        HEIGHT = 200,
         PALETTE = [],
+        paletteRGB = [],
         selected = 5,
-        painting = false,
-        cells = [];
+        painting = false;
 
       const grid = document.getElementById("grid");
+      const ctx = grid.getContext("2d");
       const paletteEl = document.getElementById("palette");
       const statusEl = document.getElementById("status");
+      const viewport = document.getElementById("viewport");
+      const gridlines = document.getElementById("gridlines");
+      const zoomLevelEl = document.getElementById("zoomlevel");
+
+      let zoom = 1,
+        fitZoom = 1,
+        panX = 0,
+        panY = 0,
+        naturalW = 0,
+        naturalH = 0;
+      const MAX_ZOOM = 24;
+
+      // Pan state (Space-drag or middle-click move the view).
+      let spaceHeld = false,
+        moveMode = false,
+        panning = false,
+        panSX = 0,
+        panSY = 0,
+        panBX = 0,
+        panBY = 0;
+
+      function applyTransform() {
+        grid.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+        zoomLevelEl.textContent = Math.round((zoom / fitZoom) * 100) + "%";
+        // Fine grid overlay: one line per cell, aligned to the canvas. Shown as
+        // soon as you zoom in past the default fit view, hidden when fully out.
+        gridlines.style.backgroundSize = `${zoom}px ${zoom}px`;
+        gridlines.style.backgroundPosition = `${panX}px ${panY}px`;
+        gridlines.style.opacity = zoom > fitZoom * 1.25 ? "1" : "0";
+      }
+
+      // Keep the grid centred when smaller than the viewport, clamped otherwise.
+      function clampPan() {
+        const vw = viewport.clientWidth,
+          vh = viewport.clientHeight,
+          gw = naturalW * zoom,
+          gh = naturalH * zoom;
+        panX = gw <= vw ? (vw - gw) / 2 : Math.min(0, Math.max(vw - gw, panX));
+        panY = gh <= vh ? (vh - gh) / 2 : Math.min(0, Math.max(vh - gh, panY));
+      }
+
+      // Measure the grid at scale 1, then fit it to the (now large) viewport.
+      function fitView() {
+        grid.style.transform = "none";
+        naturalW = grid.offsetWidth;
+        naturalH = grid.offsetHeight;
+        fitZoom =
+          Math.min(
+            viewport.clientWidth / naturalW,
+            viewport.clientHeight / naturalH,
+          ) || 1;
+        zoom = fitZoom;
+        clampPan();
+        applyTransform();
+      }
+
+      // Zoom toward a point (cx, cy) in viewport coordinates.
+      function zoomAt(nz, cx, cy) {
+        nz = Math.max(fitZoom, Math.min(MAX_ZOOM, nz));
+        const contentX = (cx - panX) / zoom,
+          contentY = (cy - panY) / zoom;
+        zoom = nz;
+        panX = cx - contentX * zoom;
+        panY = cy - contentY * zoom;
+        clampPan();
+        applyTransform();
+      }
+
+      viewport.addEventListener(
+        "wheel",
+        (e) => {
+          e.preventDefault();
+          const rect = viewport.getBoundingClientRect();
+          zoomAt(
+            zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15),
+            e.clientX - rect.left,
+            e.clientY - rect.top,
+          );
+        },
+        { passive: false },
+      );
+      document.getElementById("zoomin").onclick = () =>
+        zoomAt(zoom * 1.3, viewport.clientWidth / 2, viewport.clientHeight / 2);
+      document.getElementById("zoomout").onclick = () =>
+        zoomAt(zoom / 1.3, viewport.clientWidth / 2, viewport.clientHeight / 2);
+      document.getElementById("zoomfit").onclick = () => fitView();
+
+      addEventListener("resize", () => {
+        if (naturalW) fitView();
+      });
+
+      // Pan: scrollbars are hidden, so move the view with Space-drag or the
+      // middle mouse button. (scrollLeft/Top still work under overflow:hidden.)
+      addEventListener("keydown", (e) => {
+        if (e.code === "Space") {
+          if (!spaceHeld) {
+            spaceHeld = true;
+            viewport.style.cursor = "grab";
+          }
+          e.preventDefault(); // stop the page scrolling on Space
+        }
+      });
+      addEventListener("keyup", (e) => {
+        if (e.code === "Space") {
+          spaceHeld = false;
+          viewport.style.cursor = moveMode ? "grab" : "crosshair";
+        }
+      });
+      viewport.addEventListener("pointerdown", (e) => {
+        if (
+          e.button === 1 ||
+          e.button === 2 ||
+          (e.button === 0 && (spaceHeld || moveMode))
+        ) {
+          e.preventDefault();
+          panning = true;
+          viewport.setPointerCapture(e.pointerId);
+          panSX = e.clientX;
+          panSY = e.clientY;
+          panBX = panX;
+          panBY = panY;
+          viewport.style.cursor = "grabbing";
+        }
+      });
+      viewport.addEventListener("pointermove", (e) => {
+        if (!panning) return;
+        panX = panBX + (e.clientX - panSX);
+        panY = panBY + (e.clientY - panSY);
+        clampPan();
+        applyTransform();
+      });
+      const endPan = (e) => {
+        if (!panning) return;
+        panning = false;
+        try {
+          viewport.releasePointerCapture(e.pointerId);
+        } catch (_) {}
+        viewport.style.cursor = spaceHeld || moveMode ? "grab" : "crosshair";
+      };
+      viewport.addEventListener("pointerup", endPan);
+      viewport.addEventListener("pointercancel", endPan);
+      // Right-drag pans, so don't pop the context menu over the canvas.
+      viewport.addEventListener("contextmenu", (e) => e.preventDefault());
+
+      // "Move" mode: left-drag pans instead of painting (toggle button).
+      const moveBtn = document.getElementById("movemode");
+      moveBtn.onclick = () => {
+        moveMode = !moveMode;
+        moveBtn.classList.toggle("active", moveMode);
+        viewport.style.cursor = moveMode ? "grab" : "crosshair";
+      };
+
+      // Hex colour -> [r, g, b] for fast full-canvas redraws via ImageData.
+      function hexRGB(h) {
+        h = String(h).replace("#", "");
+        if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+        const n = parseInt(h, 16) || 0;
+        return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+      }
+
+      // Map a pointer event to a pixel coordinate (works through the transform).
+      function pixelFromEvent(e) {
+        const rect = grid.getBoundingClientRect();
+        return [
+          Math.floor((e.clientX - rect.left) / (rect.width / WIDTH)),
+          Math.floor((e.clientY - rect.top) / (rect.height / HEIGHT)),
+        ];
+      }
+      grid.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || spaceHeld || moveMode) return; // paint only
+        painting = true;
+        grid.setPointerCapture(e.pointerId);
+        const [x, y] = pixelFromEvent(e);
+        if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) paint(x, y);
+      });
+      grid.addEventListener("pointermove", (e) => {
+        if (!painting) return;
+        const [x, y] = pixelFromEvent(e);
+        if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) paint(x, y);
+      });
+      grid.addEventListener("pointerup", (e) => {
+        painting = false;
+        try {
+          grid.releasePointerCapture(e.pointerId);
+        } catch (_) {}
+      });
 
       function buildPalette() {
         paletteEl.innerHTML = "";
@@ -162,34 +402,27 @@
       }
 
       function buildGrid() {
-        grid.style.gridTemplateColumns = `repeat(${WIDTH}, ${PIXEL}px)`;
-        grid.innerHTML = "";
-        cells = [];
-        for (let y = 0; y < HEIGHT; y++) {
-          for (let x = 0; x < WIDTH; x++) {
-            const c = document.createElement("div");
-            c.className = "cell";
-            c.onmousedown = () => {
-              painting = true;
-              paint(x, y);
-            };
-            c.onmouseenter = () => {
-              if (painting) paint(x, y);
-            };
-            grid.appendChild(c);
-            cells.push(c);
-          }
-        }
+        // One bitmap pixel per cell; CSS transform scales it up (crisp).
+        grid.width = WIDTH;
+        grid.height = HEIGHT;
       }
 
       function setCell(i, idx) {
-        if (cells[i]) cells[i].style.background = PALETTE[idx] || PALETTE[0];
+        ctx.fillStyle = PALETTE[idx] || PALETTE[0];
+        ctx.fillRect(i % WIDTH, (i / WIDTH) | 0, 1, 1);
       }
 
       function render(pixels) {
-        for (let i = 0; i < cells.length; i++) {
-          setCell(i, parseInt(pixels[i], 16) || 0);
+        const img = ctx.createImageData(WIDTH, HEIGHT);
+        const d = img.data;
+        for (let i = 0; i < WIDTH * HEIGHT; i++) {
+          const c = paletteRGB[parseInt(pixels[i], 16) || 0] || [0, 0, 0];
+          d[i * 4] = c[0];
+          d[i * 4 + 1] = c[1];
+          d[i * 4 + 2] = c[2];
+          d[i * 4 + 3] = 255;
         }
+        ctx.putImageData(img, 0, 0);
       }
 
       async function fullSync() {
@@ -199,9 +432,11 @@
           WIDTH = data.width;
           HEIGHT = data.height;
           PALETTE = data.palette;
-          if (cells.length !== WIDTH * HEIGHT) {
+          paletteRGB = PALETTE.map(hexRGB);
+          if (grid.width !== WIDTH || grid.height !== HEIGHT) {
             buildPalette();
             buildGrid();
+            fitView();
           }
           render(data.pixels);
         } catch (e) {
@@ -210,7 +445,8 @@
       }
 
       async function paint(x, y) {
-        cells[y * WIDTH + x].style.background = PALETTE[selected]; // optimistic
+        ctx.fillStyle = PALETTE[selected]; // optimistic
+        ctx.fillRect(x, y, 1, 1);
         await fetch("/api/pixel", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

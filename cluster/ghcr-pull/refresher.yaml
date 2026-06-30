@@ -1,0 +1,153 @@
+# GHCR pull-secret refresher — prod-grade credential for the private image.
+#
+# A CronJob mints a short-lived GitHub App installation token (~60 min) and
+# writes it into the `ghcr-pull` dockerconfigjson secret, then attaches that
+# secret to the namespace's default ServiceAccount so every pod can pull. No
+# long-lived pull credential lives in the cluster — only the App private key
+# (scoped to "Packages: read"), supplied out of band. See README.md for setup.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ghcr-pull-refresher
+  namespace: pixelflux
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ghcr-pull-refresher
+  namespace: pixelflux
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, create, update, patch]
+  # Attach the refreshed pull secret to the default ServiceAccount.
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    resourceNames: [default]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ghcr-pull-refresher
+  namespace: pixelflux
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ghcr-pull-refresher
+subjects:
+  - kind: ServiceAccount
+    name: ghcr-pull-refresher
+    namespace: pixelflux
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ghcr-pull-refresher-script
+  namespace: pixelflux
+data:
+  refresh.sh: |
+    #!/bin/sh
+    set -eu
+    # 1. Build a short-lived RS256 JWT signed with the App private key.
+    b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+    now=$(date +%s)
+    header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+    payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$APP_ID" | b64url)
+    unsigned="${header}.${payload}"
+    sig=$(printf '%s' "$unsigned" | openssl dgst -sha256 -sign /keys/private-key.pem -binary | b64url)
+    jwt="${unsigned}.${sig}"
+    # 2. Exchange the JWT for an installation access token (valid ~60 min).
+    token=$(curl -fsS -X POST \
+      -H "Authorization: Bearer ${jwt}" \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/app/installations/${INSTALLATION_ID}/access_tokens" \
+      | jq -r '.token')
+    [ -n "$token" ] && [ "$token" != "null" ] || { echo "failed to mint installation token" >&2; exit 1; }
+    # 3. Write it into the pull secret GHCR accepts (token as the password).
+    kubectl create secret docker-registry "$SECRET_NAME" \
+      --namespace "$POD_NAMESPACE" \
+      --docker-server=ghcr.io \
+      --docker-username=x-access-token \
+      --docker-password="$token" \
+      --dry-run=client -o yaml | kubectl apply -f -
+    # 4. Ensure the default ServiceAccount uses it (idempotent).
+    kubectl patch serviceaccount default -n "$POD_NAMESPACE" \
+      -p "{\"imagePullSecrets\":[{\"name\":\"${SECRET_NAME}\"}]}"
+    echo "refreshed ${POD_NAMESPACE}/${SECRET_NAME}"
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ghcr-pull-refresher
+  namespace: pixelflux
+spec:
+  # Tokens last ~60 min; refresh comfortably inside that window.
+  schedule: "*/45 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: ghcr-pull-refresher
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: refresher
+              # Bundles kubectl + curl + jq + openssl. Pin/adjust as you like.
+              image: alpine/k8s:1.30.0
+              command: ["/bin/sh", "/scripts/refresh.sh"]
+              env:
+                - name: HOME # keep kubectl/openssl scratch off the read-only rootfs
+                  value: /tmp
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: SECRET_NAME
+                  value: ghcr-pull
+                - name: APP_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: github-app-credentials
+                      key: appId
+                - name: INSTALLATION_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: github-app-credentials
+                      key: installationId
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: app-key
+                  mountPath: /keys
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: [ALL]
+          volumes:
+            - name: script
+              configMap:
+                name: ghcr-pull-refresher-script
+            - name: app-key
+              secret:
+                secretName: github-app-credentials
+                items:
+                  - key: privateKey
+                    path: private-key.pem
+            - name: tmp
+              emptyDir: {}

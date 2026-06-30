@@ -13,7 +13,7 @@
 
 ## What it is
 
-A shared **64×64 pixel canvas**: pick a colour, click to paint, and everyone
+A shared **200×200 pixel canvas**: pick a colour, click to paint, and everyone
 sees the pixels appear live. The canvas lives in Redis (so it's shared across
 instances) and updates are pushed over Server-Sent Events. With no Redis it
 falls back to an in-memory canvas, so it runs with zero dependencies.

@@ -61,7 +61,7 @@ spec:
       # :latest digest at runtime (see the annotations above), so re-applying
       # this file briefly resets it until the next poll (~2 min) re-pins it.
       images:
-        - pixelflux=ghcr.io/vallsp/pixelflux:0.1.0
+        - pixelflux=ghcr.io/vallsp/pixelflux:0.2.0
       # Per-cluster ingress host on BOTH routes — the HTTP->HTTPS redirect
       # (`pixelflux-web`) and the TLS route (`pixelflux`). The pixelflux.example.com
       # placeholder is replaced with your real DOMAIN at apply time by the bring-up

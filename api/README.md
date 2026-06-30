@@ -15,7 +15,7 @@ executable contract test suite.
 | POST   | `/api/pixel`  | Paint one pixel → body `{"x", "y", "color"}` → `{"ok": true}` (400 if out of bounds or invalid colour)                          |
 | GET    | `/api/events` | Live pixel stream (Server-Sent Events); each event's data is `{"x","y","color"}`                                                |
 
-The canvas is **64×64** with a **16-colour palette** (`color` is `0..15`).
+The canvas is **200×200** with a **16-colour palette** (`color` is `0..15`).
 
 ## Try it
 
