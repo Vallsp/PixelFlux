@@ -541,8 +541,10 @@
           statusEl.style.color = "#94e044";
         };
         es.onmessage = (ev) => {
-          const { x, y, color } = JSON.parse(ev.data);
-          setCell(y * WIDTH + x, color);
+          // Events are coalesced server-side: each message is a batch (array).
+          for (const { x, y, color } of JSON.parse(ev.data)) {
+            setCell(y * WIDTH + x, color);
+          }
         };
         es.onerror = () => {
           statusEl.textContent = "reconnecting…";

@@ -118,11 +118,54 @@ fn hex_char(color: u8) -> Option<u8> {
     std::char::from_digit(color as u32, 16).map(|c| c as u8)
 }
 
-/// Background task: subscribe to the Redis events channel and forward every
-/// published pixel into the local broadcast channel (which feeds SSE clients).
-/// Reconnects on failure. This is what makes real-time updates work across
-/// multiple instances.
-fn spawn_event_subscriber(client: redis::Client, tx: broadcast::Sender<String>) {
+/// Pending pixel updates, keyed by `(x, y)` so a cell repainted within the same
+/// window keeps only its last colour. Flushed to SSE clients on a fixed tick.
+type PixelBuffer = Arc<Mutex<HashMap<(u16, u16), u8>>>;
+
+/// One pixel update — the unit of the Redis pub/sub payload and of each entry
+/// in a batched SSE event.
+#[derive(Serialize, Deserialize)]
+struct PixelEvent {
+    x: u16,
+    y: u16,
+    color: u8,
+}
+
+/// Drain a buffer into one batched SSE payload: a JSON array of pixel updates,
+/// or `None` if empty. Pure (no timing or I/O) so it is unit-testable directly.
+fn drain_to_batch(map: HashMap<(u16, u16), u8>) -> Option<String> {
+    if map.is_empty() {
+        return None;
+    }
+    let events: Vec<PixelEvent> = map
+        .into_iter()
+        .map(|((x, y), color)| PixelEvent { x, y, color })
+        .collect();
+    serde_json::to_string(&events).ok()
+}
+
+/// Background task: every `period`, swap the buffer out and, if non-empty,
+/// broadcast a single batched event to all SSE clients. Coalescing the fan-out
+/// onto a tick turns its cost from `writes × clients` into `ticks × clients`.
+fn spawn_flusher(buffer: PixelBuffer, tx: broadcast::Sender<String>, period: Duration) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(period);
+        loop {
+            tick.tick().await;
+            // Swap the buffer out and drop the lock *before* serialising/sending.
+            let drained = std::mem::take(&mut *buffer.lock().unwrap());
+            if let Some(batch) = drain_to_batch(drained) {
+                let _ = tx.send(batch);
+            }
+        }
+    });
+}
+
+/// Background task: subscribe to the Redis events channel and fold every
+/// published pixel into the shared buffer (which the flusher fans out). This is
+/// what makes real-time updates work across multiple instances. Reconnects on
+/// failure.
+fn spawn_event_subscriber(client: redis::Client, buffer: PixelBuffer) {
     tokio::spawn(async move {
         loop {
             if let Ok(mut pubsub) = client.get_async_pubsub().await {
@@ -130,7 +173,9 @@ fn spawn_event_subscriber(client: redis::Client, tx: broadcast::Sender<String>) 
                     let mut stream = pubsub.on_message();
                     while let Some(msg) = stream.next().await {
                         if let Ok(payload) = msg.get_payload::<String>() {
-                            let _ = tx.send(payload);
+                            if let Ok(ev) = serde_json::from_str::<PixelEvent>(&payload) {
+                                buffer.lock().unwrap().insert((ev.x, ev.y), ev.color);
+                            }
                         }
                     }
                 }
@@ -147,6 +192,8 @@ pub struct AppState {
     redis: Option<redis::aio::ConnectionManager>,
     fallback: Arc<Mutex<Vec<u8>>>,
     tx: broadcast::Sender<String>,
+    /// Pending pixel updates, flushed to SSE clients on a tick (coalesced).
+    buffer: PixelBuffer,
     /// Issued tokens (used only when Redis is unavailable).
     tokens: Arc<Mutex<HashSet<String>>>,
     /// Per-token paint counts + window start (fallback rate limiter).
@@ -164,6 +211,19 @@ impl AppState {
     /// gracefully to the in-memory canvas with in-process broadcast.
     pub async fn new(redis_url: Option<String>) -> Self {
         let (tx, _rx) = broadcast::channel(1024);
+        let buffer: PixelBuffer = Arc::new(Mutex::new(HashMap::new()));
+
+        // Coalesce the SSE fan-out onto a fixed tick (default 16ms; lower it via
+        // SSE_COALESCE_MS in tests to flush almost immediately).
+        let coalesce_ms = std::env::var("SSE_COALESCE_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(16);
+        spawn_flusher(
+            buffer.clone(),
+            tx.clone(),
+            Duration::from_millis(coalesce_ms),
+        );
 
         let mut redis = None;
         if let Some(url) = redis_url {
@@ -176,7 +236,7 @@ impl AppState {
                         .arg(blank)
                         .query_async::<i64>(&mut init)
                         .await;
-                    spawn_event_subscriber(client, tx.clone());
+                    spawn_event_subscriber(client, buffer.clone());
                     redis = Some(conn);
                 }
             }
@@ -186,6 +246,7 @@ impl AppState {
             redis,
             fallback: Arc::new(Mutex::new(blank_canvas())),
             tx,
+            buffer,
             tokens: Arc::new(Mutex::new(HashSet::new())),
             rates: Arc::new(Mutex::new(HashMap::new())),
             online: Arc::new(AtomicI64::new(0)),
@@ -246,7 +307,11 @@ impl AppState {
         }
 
         self.fallback.lock().unwrap()[offset] = ch;
-        let _ = self.tx.send(payload);
+        // Feed the coalescing buffer; the flusher batches and broadcasts it.
+        self.buffer
+            .lock()
+            .unwrap()
+            .insert((x as u16, y as u16), color);
         Ok(())
     }
 
@@ -361,12 +426,14 @@ impl AppState {
     }
 
     /// Subscribe to the live pixel event stream (the same feed used by SSE).
-    /// Each message is the JSON payload `{"x":..,"y":..,"color":..}`.
+    /// Each message is a coalesced batch: a JSON array
+    /// `[{"x":..,"y":..,"color":..}, ...]`.
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<String> {
         self.tx.subscribe()
     }
 
-    /// A stream of live pixel events for SSE subscribers.
+    /// A stream of batched live pixel events for SSE subscribers (one event per
+    /// flush tick, each carrying a JSON array of updates).
     fn events(&self) -> impl Stream<Item = Result<Event, Infallible>> {
         BroadcastStream::new(self.tx.subscribe()).filter_map(|msg| match msg {
             Ok(json) => Some(Ok(Event::default().data(json))),
@@ -562,13 +629,41 @@ mod tests {
         assert!(state.set_pixel(0, 0, 99).await.is_err()); // colour out of palette
     }
 
+    #[test]
+    fn drain_dedups_and_formats() {
+        // Empty buffer -> nothing to broadcast.
+        assert_eq!(drain_to_batch(HashMap::new()), None);
+
+        // One pixel -> a single-element JSON array.
+        let mut one = HashMap::new();
+        one.insert((5u16, 6u16), 9u8);
+        assert_eq!(
+            drain_to_batch(one),
+            Some(r#"[{"x":5,"y":6,"color":9}]"#.to_string())
+        );
+
+        // Same cell repainted in the window -> last write wins (one entry).
+        let mut dup = HashMap::new();
+        dup.insert((1u16, 2u16), 3u8);
+        dup.insert((1u16, 2u16), 7u8);
+        assert_eq!(
+            drain_to_batch(dup),
+            Some(r#"[{"x":1,"y":2,"color":7}]"#.to_string())
+        );
+    }
+
     #[tokio::test]
-    async fn painting_emits_a_live_event() {
+    async fn painting_emits_a_batched_live_event() {
+        std::env::set_var("SSE_COALESCE_MS", "5");
         let state = AppState::new(None).await;
-        let mut rx = state.tx.subscribe();
+        let mut rx = state.subscribe();
         assert!(state.set_pixel(3, 4, 7).await.is_ok());
-        let msg = rx.recv().await.unwrap();
-        assert_eq!(msg, r#"{"x":3,"y":4,"color":7}"#);
+        // Updates are coalesced, so the event is a JSON array delivered a tick later.
+        let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("a batch should be flushed within a tick")
+            .unwrap();
+        assert_eq!(msg, r#"[{"x":3,"y":4,"color":7}]"#);
     }
 
     #[tokio::test]

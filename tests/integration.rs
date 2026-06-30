@@ -57,10 +57,11 @@ async fn pixel_event_is_fanned_out_across_instances() {
     // Paint on the *painter* instance.
     painter.set_pixel(5, 6, 9).await.expect("paint");
 
-    // The *watcher* must receive the event via Redis pub/sub fan-out.
+    // The *watcher* must receive the event via Redis pub/sub fan-out. Updates
+    // are coalesced into a batched array and flushed on a tick (default 16ms).
     let msg = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
         .await
         .expect("no event received within the timeout")
         .expect("broadcast channel closed");
-    assert_eq!(msg, r#"{"x":5,"y":6,"color":9}"#);
+    assert_eq!(msg, r#"[{"x":5,"y":6,"color":9}]"#);
 }

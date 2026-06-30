@@ -162,4 +162,7 @@ paths:
             text/event-stream:
               schema:
                 type: string
-                description: each event data is {"x":int,"y":int,"color":int}
+                description: >-
+                  Each event's data is a coalesced batch — a JSON array
+                  [{"x":int,"y":int,"color":int}, ...] flushed on a fixed tick
+                  (default 16ms, SSE_COALESCE_MS).
