@@ -10,12 +10,15 @@ executable contract test suite.
 | ------ | ------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/`           | Web UI (embedded single page)                                                                                                   |
 | GET    | `/health`     | Liveness probe → `{"status":"ok"}`                                                                                              |
-| GET    | `/info`       | `{"name", "version", "instance"}` — `instance` is the pod/host serving the request (makes load balancing visible)               |
+| GET    | `/info`       | `{"name", "version", "instance", "online"}` — `instance` is the serving pod/host; `online` is the live viewer count (open SSE streams) |
 | GET    | `/api/canvas` | Whole canvas → `{"width", "height", "palette", "pixels"}` (`pixels` is a `width*height` hex string, one palette index per cell) |
-| POST   | `/api/pixel`  | Paint one pixel → body `{"x", "y", "color"}` → `{"ok": true}` (400 if out of bounds or invalid colour)                          |
+| POST   | `/register`   | Issue a paint token → `{"token"}`. Deliberately slow (~5s) to make mass token creation expensive                                |
+| POST   | `/api/pixel`  | Paint one pixel → header `X-Token` + body `{"x", "y", "color"}` → `{"ok": true}` (400 invalid · 401 no/unknown token · 429 rate limited) |
 | GET    | `/api/events` | Live pixel stream (Server-Sent Events); each event's data is `{"x","y","color"}`                                                |
 
 The canvas is **200×200** with a **16-colour palette** (`color` is `0..15`).
+Painting requires a token from `/register` (sent as `X-Token`), and is limited to
+**4096 pixels per token per 30 s**.
 
 ## Try it
 

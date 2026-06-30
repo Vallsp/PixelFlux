@@ -186,7 +186,7 @@ Chaque push et chaque PR passent par le **même `nix develop`** sur GitHub Actio
 
 # La suite
 
-- **Auth et rate-limiting** — aujourd'hui n'importe qui peut peindre ; ajouter une identité et des limites contre les abus.
+- **Comptes et quotas** — il y a déjà des jetons anti-spam (`/register` volontairement lent) et une limite de 4096 px / 30 s par jeton ; l'étape suivante serait de vrais comptes.
 - **Historique durable** — capturer et rejouer le canevas au-delà de l'état vif de Redis.
 - **Observabilité** — métriques et tracing le long du chemin SSE / Redis.
 - Périmètre assumé : ce sont des omissions délibérées, pas des oublis.

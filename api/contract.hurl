@@ -17,17 +17,35 @@ jsonpath "$.height" == 200
 jsonpath "$.palette" count == 16
 jsonpath "$.pixels" isString
 
-# Paint a valid pixel
+# Register a token (deliberately slow: ~5s anti-abuse delay)
+POST {{host}}/register
+HTTP 200
+[Captures]
+token: jsonpath "$.token"
+[Asserts]
+jsonpath "$.token" isString
+
+# Painting without a token is rejected
 POST {{host}}/api/pixel
 Content-Type: application/json
+{ "x": 0, "y": 0, "color": 5 }
+HTTP 401
+[Asserts]
+jsonpath "$.ok" == false
+
+# Paint a valid pixel (authenticated with the token)
+POST {{host}}/api/pixel
+Content-Type: application/json
+X-Token: {{token}}
 { "x": 0, "y": 0, "color": 5 }
 HTTP 200
 [Asserts]
 jsonpath "$.ok" == true
 
-# Reject an out-of-bounds pixel
+# Reject an out-of-bounds pixel (authorised, but invalid coordinates)
 POST {{host}}/api/pixel
 Content-Type: application/json
+X-Token: {{token}}
 { "x": 999, "y": 0, "color": 5 }
 HTTP 400
 [Asserts]
@@ -40,3 +58,4 @@ HTTP 200
 [Asserts]
 jsonpath "$.name" == "pixelflux"
 jsonpath "$.instance" isString
+jsonpath "$.online" isInteger

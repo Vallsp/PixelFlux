@@ -25,9 +25,11 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tokio_stream::{wrappers::BroadcastStream, Stream, StreamExt};
 
@@ -35,6 +37,15 @@ pub const WIDTH: usize = 200;
 pub const HEIGHT: usize = 200;
 const CANVAS_KEY: &str = "canvas";
 const EVENTS_CHANNEL: &str = "canvas:events";
+
+/// Registration is deliberately slow so minting tokens en masse is expensive
+/// (you can't just create a fresh user on every paint request).
+const REGISTER_DELAY: Duration = Duration::from_secs(5);
+/// How long an issued token stays valid server-side (clients re-register on 401).
+const TOKEN_TTL_SECS: u64 = 86_400;
+/// Per-token paint budget within a rolling window.
+const RATE_LIMIT: u64 = 4096;
+const RATE_WINDOW_SECS: u64 = 30;
 
 /// 16-colour palette (index = hex char stored per pixel).
 pub const PALETTE: [&str; 16] = [
@@ -60,6 +71,36 @@ impl IntoResponse for PixelError {
     fn into_response(self) -> Response {
         (
             StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                ok: false,
+                error: self.to_string(),
+            }),
+        )
+            .into_response()
+    }
+}
+
+/// Errors returned by the paint endpoint: invalid pixel (400), missing/unknown
+/// token (401), or too many pixels in the window (429).
+#[derive(Debug, thiserror::Error)]
+pub enum ApiError {
+    #[error(transparent)]
+    Pixel(#[from] PixelError),
+    #[error("missing or unknown token — register first")]
+    Unauthorized,
+    #[error("rate limit exceeded — max 4096 pixels per 30s per token")]
+    RateLimited,
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let status = match self {
+            ApiError::Pixel(_) => StatusCode::BAD_REQUEST,
+            ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
+            ApiError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+        };
+        (
+            status,
             Json(ErrorResponse {
                 ok: false,
                 error: self.to_string(),
@@ -106,6 +147,12 @@ pub struct AppState {
     redis: Option<redis::aio::ConnectionManager>,
     fallback: Arc<Mutex<Vec<u8>>>,
     tx: broadcast::Sender<String>,
+    /// Issued tokens (used only when Redis is unavailable).
+    tokens: Arc<Mutex<HashSet<String>>>,
+    /// Per-token paint counts + window start (fallback rate limiter).
+    rates: Arc<Mutex<HashMap<String, (u64, Instant)>>>,
+    /// Live-viewer count (used only when Redis is unavailable).
+    online: Arc<AtomicI64>,
 }
 
 impl AppState {
@@ -139,6 +186,9 @@ impl AppState {
             redis,
             fallback: Arc::new(Mutex::new(blank_canvas())),
             tx,
+            tokens: Arc::new(Mutex::new(HashSet::new())),
+            rates: Arc::new(Mutex::new(HashMap::new())),
+            online: Arc::new(AtomicI64::new(0)),
         }
     }
 
@@ -200,6 +250,116 @@ impl AppState {
         Ok(())
     }
 
+    /// Persist a token (Redis when available so every replica accepts it,
+    /// otherwise in-process). No artificial delay — see `register_token`.
+    async fn store_token(&self, token: &str) {
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let _ = redis::cmd("SET")
+                .arg(format!("token:{token}"))
+                .arg(1)
+                .arg("EX")
+                .arg(TOKEN_TTL_SECS)
+                .query_async::<String>(&mut conn)
+                .await;
+        } else {
+            self.tokens.lock().unwrap().insert(token.to_string());
+        }
+    }
+
+    /// Issue a fresh random token. Deliberately slow (`REGISTER_DELAY`) so a
+    /// client can't cheaply mint a new identity on every paint request.
+    pub async fn register_token(&self) -> String {
+        let token = uuid::Uuid::new_v4().to_string();
+        tokio::time::sleep(REGISTER_DELAY).await;
+        self.store_token(&token).await;
+        token
+    }
+
+    /// Validate `token` and count this paint against its budget. Returns
+    /// `Unauthorized` for an unknown token and `RateLimited` past the window
+    /// limit. Backed by Redis (shared across replicas) or an in-process store.
+    pub async fn authorize(&self, token: &str) -> Result<(), ApiError> {
+        if token.is_empty() {
+            return Err(ApiError::Unauthorized);
+        }
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let known: bool = redis::cmd("EXISTS")
+                .arg(format!("token:{token}"))
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(false);
+            if !known {
+                return Err(ApiError::Unauthorized);
+            }
+            let key = format!("rate:{token}");
+            let count: i64 = redis::cmd("INCR")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(1);
+            if count == 1 {
+                let _ = redis::cmd("EXPIRE")
+                    .arg(&key)
+                    .arg(RATE_WINDOW_SECS)
+                    .query_async::<i64>(&mut conn)
+                    .await;
+            }
+            if count as u64 > RATE_LIMIT {
+                return Err(ApiError::RateLimited);
+            }
+        } else {
+            if !self.tokens.lock().unwrap().contains(token) {
+                return Err(ApiError::Unauthorized);
+            }
+            let mut rates = self.rates.lock().unwrap();
+            let now = Instant::now();
+            let entry = rates.entry(token.to_string()).or_insert((0, now));
+            if now.duration_since(entry.1).as_secs() >= RATE_WINDOW_SECS {
+                *entry = (0, now);
+            }
+            entry.0 += 1;
+            if entry.0 > RATE_LIMIT {
+                return Err(ApiError::RateLimited);
+            }
+        }
+        Ok(())
+    }
+
+    /// Count of currently connected viewers (open SSE streams). Shared across
+    /// replicas via Redis, or per-instance in the fallback.
+    async fn online_add(&self, delta: i64) {
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let cmd = if delta >= 0 { "INCRBY" } else { "DECRBY" };
+            let _ = redis::cmd(cmd)
+                .arg("online")
+                .arg(delta.abs())
+                .query_async::<i64>(&mut conn)
+                .await;
+        } else {
+            self.online.fetch_add(delta, Ordering::Relaxed);
+        }
+    }
+
+    /// Current number of connected viewers (never negative).
+    pub async fn online(&self) -> i64 {
+        let n = if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            redis::cmd("GET")
+                .arg("online")
+                .query_async::<Option<i64>>(&mut conn)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(0)
+        } else {
+            self.online.load(Ordering::Relaxed)
+        };
+        n.max(0)
+    }
+
     /// Subscribe to the live pixel event stream (the same feed used by SSE).
     /// Each message is the JSON payload `{"x":..,"y":..,"color":..}`.
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<String> {
@@ -225,6 +385,7 @@ struct Info {
     name: &'static str,
     version: &'static str,
     instance: String,
+    online: i64,
 }
 
 /// Identify the running instance. In Kubernetes (and Docker) `HOSTNAME` is the
@@ -263,6 +424,11 @@ struct PixelResponse {
 }
 
 #[derive(Serialize)]
+struct RegisterResponse {
+    token: String,
+}
+
+#[derive(Serialize)]
 struct ErrorResponse {
     ok: bool,
     error: String,
@@ -276,11 +442,12 @@ async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
 }
 
-async fn info() -> Json<Info> {
+async fn info(State(state): State<AppState>) -> Json<Info> {
     Json(Info {
         name: env!("CARGO_PKG_NAME"),
         version: env!("CARGO_PKG_VERSION"),
         instance: instance_id(),
+        online: state.online().await,
     })
 }
 
@@ -293,18 +460,52 @@ async fn get_canvas(State(state): State<AppState>) -> Json<CanvasResponse> {
     })
 }
 
+/// Issue a token. Slow on purpose (anti-abuse) — see `register_token`.
+async fn register(State(state): State<AppState>) -> Json<RegisterResponse> {
+    Json(RegisterResponse {
+        token: state.register_token().await,
+    })
+}
+
 async fn put_pixel(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<PixelRequest>,
-) -> Result<Json<PixelResponse>, PixelError> {
+) -> Result<Json<PixelResponse>, ApiError> {
+    let token = headers
+        .get("x-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    state.authorize(token).await?;
     state.set_pixel(req.x, req.y, req.color).await?;
     Ok(Json(PixelResponse { ok: true }))
+}
+
+/// Decrements the live-viewer count when its SSE connection is dropped.
+struct OnlineGuard {
+    state: AppState,
+}
+
+impl Drop for OnlineGuard {
+    fn drop(&mut self) {
+        let state = self.state.clone();
+        tokio::spawn(async move { state.online_add(-1).await });
+    }
 }
 
 async fn sse_events(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(state.events()).keep_alive(KeepAlive::default())
+    state.online_add(1).await;
+    // Tie a guard to the stream so the count drops when the client disconnects.
+    let guard = OnlineGuard {
+        state: state.clone(),
+    };
+    let stream = state.events().map(move |ev| {
+        let _ = &guard; // keep the guard alive for the stream's lifetime
+        ev
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 /// Build the application router.
@@ -314,6 +515,7 @@ pub fn app(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/info", get(info))
         .route("/api/canvas", get(get_canvas))
+        .route("/register", post(register))
         .route("/api/pixel", post(put_pixel))
         .route("/api/events", get(sse_events))
         .with_state(state)
@@ -367,6 +569,30 @@ mod tests {
         assert!(state.set_pixel(3, 4, 7).await.is_ok());
         let msg = rx.recv().await.unwrap();
         assert_eq!(msg, r#"{"x":3,"y":4,"color":7}"#);
+    }
+
+    #[tokio::test]
+    async fn token_is_required_and_rate_limited() {
+        let state = AppState::new(None).await;
+        // No token / unknown token are rejected.
+        assert!(matches!(
+            state.authorize("").await,
+            Err(ApiError::Unauthorized)
+        ));
+        assert!(matches!(
+            state.authorize("forged").await,
+            Err(ApiError::Unauthorized)
+        ));
+        // A known token is accepted up to the budget, then rate-limited.
+        // (store_token skips the deliberate 5s registration delay.)
+        state.store_token("t").await;
+        for _ in 0..RATE_LIMIT {
+            assert!(state.authorize("t").await.is_ok());
+        }
+        assert!(matches!(
+            state.authorize("t").await,
+            Err(ApiError::RateLimited)
+        ));
     }
 
     #[tokio::test]
