@@ -61,7 +61,7 @@ Navigateur ──HTTP──▶  axum  ──┐
 
 # Modèle de données et API
 
-- Canevas = **40 000 cases**, chacune un index 4 bits dans une **palette de 16 couleurs**, stockées dans Redis.
+- Canevas = **40 000 cases**, chacune une couleur **RGB** (`rrggbb`, 16M couleurs) — palette de presets + pipette côté UI ; stocké dans Redis.
 - Une surface HTTP réduite et explicite :
   - `GET /api/canvas` — snapshot complet · `POST /api/pixel` — peindre une case
   - `GET /api/events` — flux **SSE** des modifications en direct

@@ -6,17 +6,18 @@ executable contract test suite.
 
 ## Endpoints
 
-| Method | Route         | Description                                                                                                                                               |
-| ------ | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/`           | Web UI (embedded single page)                                                                                                                             |
-| GET    | `/health`     | Liveness probe → `{"status":"ok"}`                                                                                                                        |
-| GET    | `/info`       | `{"name", "version", "instance", "online"}` — `instance` is the serving pod/host; `online` is the live viewer count (open SSE streams)                    |
-| GET    | `/api/canvas` | Whole canvas → `{"width", "height", "palette", "pixels"}` (`pixels` is a `width*height` hex string, one palette index per cell)                           |
-| POST   | `/register`   | Issue a paint token → `{"token"}`. Deliberately slow (~5s) to make mass token creation expensive                                                          |
-| POST   | `/api/pixel`  | Paint one pixel → header `X-Token` + body `{"x", "y", "color"}` → `{"ok": true}` (400 invalid · 401 no/unknown token · 429 rate limited)                  |
-| GET    | `/api/events` | Live pixel stream (SSE); each event is a coalesced **batch** — a JSON array `[{"x","y","color"}, …]` flushed on a tick (default 16 ms, `SSE_COALESCE_MS`) |
+| Method | Route         | Description                                                                                                                                                       |
+| ------ | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/`           | Web UI (embedded single page)                                                                                                                                     |
+| GET    | `/health`     | Liveness probe → `{"status":"ok"}`                                                                                                                                |
+| GET    | `/info`       | `{"name", "version", "instance", "online"}` — `instance` is the serving pod/host; `online` is the live viewer count (open SSE streams)                            |
+| GET    | `/api/canvas` | Whole canvas → `{"width", "height", "palette", "pixels"}` (`pixels` is a `width*height*6` hex string — an `rrggbb` colour per cell)                               |
+| POST   | `/register`   | Issue a paint token → `{"token"}`. Deliberately slow (~5s) to make mass token creation expensive                                                                  |
+| POST   | `/api/pixel`  | Paint one pixel → header `X-Token` + body `{"x", "y", "color"}` (`color` = `rrggbb` hex) → `{"ok": true}` (400 invalid · 401 no/unknown token · 429 rate limited) |
+| GET    | `/api/events` | Live pixel stream (SSE); each event is a coalesced **batch** — a JSON array `[{"x","y","color"}, …]` flushed on a tick (default 16 ms, `SSE_COALESCE_MS`)         |
 
-The canvas is **200×200** with a **16-colour palette** (`color` is `0..15`).
+The canvas is **200×200** in **full RGB** — each pixel is any `rrggbb` colour
+(16M colours); the `palette` field just gives default preset swatches for the UI.
 Painting requires a token from `/register` (sent as `X-Token`), and is limited to
 **4096 pixels per token per 30 s**.
 

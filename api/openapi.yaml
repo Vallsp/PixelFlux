@@ -71,9 +71,10 @@ paths:
                   palette:
                     type: array
                     items: { type: string }
+                    description: Default preset colours for the UI (pixels can be any RGB)
                   pixels:
                     type: string
-                    description: width*height hex chars, one palette index per pixel
+                    description: width*height*6 hex chars — an rrggbb RGB colour per pixel
   /register:
     post:
       summary: Issue a paint token
@@ -112,7 +113,11 @@ paths:
               properties:
                 x: { type: integer, minimum: 0, maximum: 199 }
                 y: { type: integer, minimum: 0, maximum: 199 }
-                color: { type: integer, minimum: 0, maximum: 15 }
+                color:
+                  type: string
+                  pattern: "^#?[0-9a-fA-F]{6}$"
+                  description: RGB colour, 6 hex digits (with or without a leading '#')
+                  example: e50000
       responses:
         "200":
           description: Pixel painted

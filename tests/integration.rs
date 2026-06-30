@@ -21,15 +21,15 @@ async fn canvas_is_shared_through_redis() {
 
     // Paint a pixel through one server instance...
     let writer = AppState::new(Some(url.clone())).await;
-    assert!(writer.set_pixel(2, 3, 10).await.is_ok()); // colour 10 -> 'a'
-    let offset = 3 * WIDTH + 2;
+    assert!(writer.set_pixel(2, 3, "0af10c").await.is_ok());
+    let offset = (3 * WIDTH + 2) * 6; // 6 hex chars per pixel
 
     // ...and read it back through a *separate* instance: the pixel must be
     // there, proving the canvas really lives in Redis, not process memory.
     let reader = AppState::new(Some(url)).await;
     let canvas = reader.canvas().await;
-    assert_eq!(canvas.len(), WIDTH * HEIGHT);
-    assert_eq!(canvas.as_bytes()[offset], b'a');
+    assert_eq!(canvas.len(), WIDTH * HEIGHT * 6);
+    assert_eq!(&canvas[offset..offset + 6], "0af10c");
 }
 
 #[tokio::test]
@@ -55,7 +55,7 @@ async fn pixel_event_is_fanned_out_across_instances() {
     let mut events = watcher.subscribe();
 
     // Paint on the *painter* instance.
-    painter.set_pixel(5, 6, 9).await.expect("paint");
+    painter.set_pixel(5, 6, "123456").await.expect("paint");
 
     // The *watcher* must receive the event via Redis pub/sub fan-out. Updates
     // are coalesced into a batched array and flushed on a tick (default 16ms).
@@ -63,5 +63,5 @@ async fn pixel_event_is_fanned_out_across_instances() {
         .await
         .expect("no event received within the timeout")
         .expect("broadcast channel closed");
-    assert_eq!(msg, r#"[{"x":5,"y":6,"color":9}]"#);
+    assert_eq!(msg, r#"[{"x":5,"y":6,"color":"123456"}]"#);
 }

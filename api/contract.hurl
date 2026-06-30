@@ -28,7 +28,7 @@ jsonpath "$.token" isString
 # Painting without a token is rejected
 POST {{host}}/api/pixel
 Content-Type: application/json
-{ "x": 0, "y": 0, "color": 5 }
+{ "x": 0, "y": 0, "color": "e50000" }
 HTTP 401
 [Asserts]
 jsonpath "$.ok" == false
@@ -37,7 +37,7 @@ jsonpath "$.ok" == false
 POST {{host}}/api/pixel
 Content-Type: application/json
 X-Token: {{token}}
-{ "x": 0, "y": 0, "color": 5 }
+{ "x": 0, "y": 0, "color": "e50000" }
 HTTP 200
 [Asserts]
 jsonpath "$.ok" == true
@@ -46,7 +46,7 @@ jsonpath "$.ok" == true
 POST {{host}}/api/pixel
 Content-Type: application/json
 X-Token: {{token}}
-{ "x": 999, "y": 0, "color": 5 }
+{ "x": 999, "y": 0, "color": "e50000" }
 HTTP 400
 [Asserts]
 jsonpath "$.ok" == false

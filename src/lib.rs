@@ -1,8 +1,8 @@
 //! Collaborative pixel canvas — core application logic.
 //!
-//! A shared `WIDTH x HEIGHT` grid where each cell holds a palette index
-//! (0..15), encoded as one hex character. The whole canvas is a single
-//! `WIDTH*HEIGHT` string.
+//! A shared `WIDTH x HEIGHT` grid where each cell holds an RGB colour encoded
+//! as 6 hex characters (`rrggbb`). The whole canvas is a single
+//! `WIDTH*HEIGHT*6` string.
 //!
 //! State lives in Redis when a reachable `REDIS_URL` is provided (shared
 //! across instances and visitors), otherwise in an in-process canvas so the
@@ -34,7 +34,12 @@ use tokio_stream::{wrappers::BroadcastStream, Stream, StreamExt};
 
 pub const WIDTH: usize = 200;
 pub const HEIGHT: usize = 200;
-const CANVAS_KEY: &str = "canvas";
+/// Each pixel is stored as a 6-hex-digit RGB colour (`rrggbb`), so the canvas
+/// supports the full 16M-colour space rather than a fixed palette.
+const BYTES_PER_PIXEL: usize = 6;
+// Versioned: the RGB format (6 hex/pixel) is incompatible with the old palette
+// canvas (1 hex/pixel), so use a fresh key rather than corrupt the old one.
+const CANVAS_KEY: &str = "canvas:rgb";
 const EVENTS_CHANNEL: &str = "canvas:events";
 
 /// Registration is deliberately slow so minting tokens en masse is expensive
@@ -52,7 +57,8 @@ const RATE_WINDOW_SECS: u64 = 30;
 const ONLINE_HEARTBEAT_SECS: u64 = 5;
 const ONLINE_TTL_SECS: i64 = 15;
 
-/// 16-colour palette (index = hex char stored per pixel).
+/// Default preset colours offered as quick swatches in the UI. Pixels can be
+/// any RGB colour; these are just convenient starting points.
 pub const PALETTE: [&str; 16] = [
     "#ffffff", "#e4e4e4", "#888888", "#222222", "#ffa7d1", "#e50000", "#e59500", "#a06a42",
     "#e5d900", "#94e044", "#02be01", "#00d3dd", "#0083c7", "#0000ea", "#cf6ee4", "#820080",
@@ -67,8 +73,8 @@ pub enum PixelError {
         width: usize,
         height: usize,
     },
-    #[error("color {0} is not in the palette (0–15)")]
-    InvalidColor(u8),
+    #[error("color {0:?} is not a 6-digit hex colour (rrggbb)")]
+    InvalidColor(String),
 }
 
 /// Map a `PixelError` to a 400 response carrying its message.
@@ -116,11 +122,19 @@ impl IntoResponse for ApiError {
 }
 
 fn blank_canvas() -> Vec<u8> {
-    vec![b'0'; WIDTH * HEIGHT]
+    // White background: "ffffff" per pixel.
+    b"ffffff".repeat(WIDTH * HEIGHT)
 }
 
-fn hex_char(color: u8) -> Option<u8> {
-    std::char::from_digit(color as u32, 16).map(|c| c as u8)
+/// Validate and normalise a colour to 6 lowercase hex digits (no `#`), or
+/// `None` if it isn't a valid RGB colour.
+fn normalize_color(color: &str) -> Option<String> {
+    let c = color.trim().trim_start_matches('#');
+    if c.len() == BYTES_PER_PIXEL && c.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(c.to_ascii_lowercase())
+    } else {
+        None
+    }
 }
 
 /// Current Unix time in seconds (used as the heartbeat score for viewers).
@@ -133,20 +147,20 @@ fn now_secs() -> i64 {
 
 /// Pending pixel updates, keyed by `(x, y)` so a cell repainted within the same
 /// window keeps only its last colour. Flushed to SSE clients on a fixed tick.
-type PixelBuffer = Arc<Mutex<HashMap<(u16, u16), u8>>>;
+type PixelBuffer = Arc<Mutex<HashMap<(u16, u16), String>>>;
 
 /// One pixel update — the unit of the Redis pub/sub payload and of each entry
-/// in a batched SSE event.
+/// in a batched SSE event. `color` is a 6-hex RGB string.
 #[derive(Serialize, Deserialize)]
 struct PixelEvent {
     x: u16,
     y: u16,
-    color: u8,
+    color: String,
 }
 
 /// Drain a buffer into one batched SSE payload: a JSON array of pixel updates,
 /// or `None` if empty. Pure (no timing or I/O) so it is unit-testable directly.
-fn drain_to_batch(map: HashMap<(u16, u16), u8>) -> Option<String> {
+fn drain_to_batch(map: HashMap<(u16, u16), String>) -> Option<String> {
     if map.is_empty() {
         return None;
     }
@@ -275,7 +289,7 @@ impl AppState {
                 .query_async::<Option<String>>(&mut conn)
                 .await
             {
-                if s.len() == WIDTH * HEIGHT {
+                if s.len() == WIDTH * HEIGHT * BYTES_PER_PIXEL {
                     return s;
                 }
             }
@@ -286,7 +300,7 @@ impl AppState {
     /// Paint a single pixel. Returns an error if the coordinates or colour are
     /// invalid. With Redis the update is published to every instance; otherwise
     /// it is broadcast in-process.
-    pub async fn set_pixel(&self, x: usize, y: usize, color: u8) -> Result<(), PixelError> {
+    pub async fn set_pixel(&self, x: usize, y: usize, color: &str) -> Result<(), PixelError> {
         if x >= WIDTH || y >= HEIGHT {
             return Err(PixelError::OutOfBounds {
                 x,
@@ -295,16 +309,17 @@ impl AppState {
                 height: HEIGHT,
             });
         }
-        let ch = hex_char(color).ok_or(PixelError::InvalidColor(color))?;
-        let offset = y * WIDTH + x;
-        let payload = format!(r#"{{"x":{x},"y":{y},"color":{color}}}"#);
+        let color =
+            normalize_color(color).ok_or_else(|| PixelError::InvalidColor(color.to_string()))?;
+        let offset = (y * WIDTH + x) * BYTES_PER_PIXEL;
+        let payload = format!(r#"{{"x":{x},"y":{y},"color":"{color}"}}"#);
 
         if let Some(conn) = &self.redis {
             let mut conn = conn.clone();
             let wrote = redis::cmd("SETRANGE")
                 .arg(CANVAS_KEY)
                 .arg(offset)
-                .arg((ch as char).to_string())
+                .arg(&color)
                 .query_async::<i64>(&mut conn)
                 .await
                 .is_ok();
@@ -319,7 +334,10 @@ impl AppState {
             }
         }
 
-        self.fallback.lock().unwrap()[offset] = ch;
+        {
+            let mut fb = self.fallback.lock().unwrap();
+            fb[offset..offset + BYTES_PER_PIXEL].copy_from_slice(color.as_bytes());
+        }
         // Feed the coalescing buffer; the flusher batches and broadcasts it.
         self.buffer
             .lock()
@@ -521,7 +539,8 @@ struct CanvasResponse {
 struct PixelRequest {
     x: usize,
     y: usize,
-    color: u8,
+    /// RGB colour as 6 hex digits (`rrggbb`), with or without a leading `#`.
+    color: String,
 }
 
 #[derive(Serialize)]
@@ -583,7 +602,7 @@ async fn put_pixel(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     state.authorize(token).await?;
-    state.set_pixel(req.x, req.y, req.color).await?;
+    state.set_pixel(req.x, req.y, &req.color).await?;
     Ok(Json(PixelResponse { ok: true }))
 }
 
@@ -674,27 +693,33 @@ mod tests {
     async fn canvas_starts_blank() {
         let state = AppState::new(None).await;
         let canvas = state.canvas().await;
-        assert_eq!(canvas.len(), WIDTH * HEIGHT);
-        assert!(canvas.chars().all(|c| c == '0'));
+        assert_eq!(canvas.len(), WIDTH * HEIGHT * BYTES_PER_PIXEL);
+        assert!(canvas.chars().all(|c| c == 'f')); // white "ffffff" per pixel
     }
 
     #[tokio::test]
     async fn set_pixel_updates_the_canvas() {
         let state = AppState::new(None).await;
-        assert!(state.set_pixel(1, 0, 5).await.is_ok()); // offset 1 -> '5'
-        assert!(state.set_pixel(0, 1, 10).await.is_ok()); // offset WIDTH -> 'a'
+        assert!(state.set_pixel(1, 0, "ff0000").await.is_ok()); // pixel 1 -> red
+        assert!(state.set_pixel(0, 1, "00ff00").await.is_ok()); // row below -> green
 
         let canvas = state.canvas().await;
-        assert_eq!(canvas.as_bytes()[1], b'5');
-        assert_eq!(canvas.as_bytes()[WIDTH], b'a');
+        assert_eq!(&canvas[BYTES_PER_PIXEL..BYTES_PER_PIXEL * 2], "ff0000");
+        let row = WIDTH * BYTES_PER_PIXEL;
+        assert_eq!(&canvas[row..row + BYTES_PER_PIXEL], "00ff00");
     }
 
     #[tokio::test]
-    async fn set_pixel_rejects_invalid_input() {
+    async fn set_pixel_normalises_and_rejects() {
         let state = AppState::new(None).await;
-        assert!(state.set_pixel(WIDTH, 0, 1).await.is_err()); // x out of bounds
-        assert!(state.set_pixel(0, HEIGHT, 1).await.is_err()); // y out of bounds
-        assert!(state.set_pixel(0, 0, 99).await.is_err()); // colour out of palette
+        // A leading '#' and uppercase are accepted and normalised.
+        assert!(state.set_pixel(0, 0, "#AABBCC").await.is_ok());
+        assert_eq!(&state.canvas().await[0..BYTES_PER_PIXEL], "aabbcc");
+        // Invalid inputs are rejected.
+        assert!(state.set_pixel(WIDTH, 0, "ffffff").await.is_err()); // x out of bounds
+        assert!(state.set_pixel(0, HEIGHT, "ffffff").await.is_err()); // y out of bounds
+        assert!(state.set_pixel(0, 0, "12345").await.is_err()); // wrong length
+        assert!(state.set_pixel(0, 0, "gggggg").await.is_err()); // non-hex
     }
 
     #[test]
@@ -704,19 +729,19 @@ mod tests {
 
         // One pixel -> a single-element JSON array.
         let mut one = HashMap::new();
-        one.insert((5u16, 6u16), 9u8);
+        one.insert((5u16, 6u16), "abcdef".to_string());
         assert_eq!(
             drain_to_batch(one),
-            Some(r#"[{"x":5,"y":6,"color":9}]"#.to_string())
+            Some(r#"[{"x":5,"y":6,"color":"abcdef"}]"#.to_string())
         );
 
         // Same cell repainted in the window -> last write wins (one entry).
         let mut dup = HashMap::new();
-        dup.insert((1u16, 2u16), 3u8);
-        dup.insert((1u16, 2u16), 7u8);
+        dup.insert((1u16, 2u16), "111111".to_string());
+        dup.insert((1u16, 2u16), "222222".to_string());
         assert_eq!(
             drain_to_batch(dup),
-            Some(r#"[{"x":1,"y":2,"color":7}]"#.to_string())
+            Some(r#"[{"x":1,"y":2,"color":"222222"}]"#.to_string())
         );
     }
 
@@ -725,13 +750,13 @@ mod tests {
         std::env::set_var("SSE_COALESCE_MS", "5");
         let state = AppState::new(None).await;
         let mut rx = state.subscribe();
-        assert!(state.set_pixel(3, 4, 7).await.is_ok());
+        assert!(state.set_pixel(3, 4, "e50000").await.is_ok());
         // Updates are coalesced, so the event is a JSON array delivered a tick later.
         let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
             .expect("a batch should be flushed within a tick")
             .unwrap();
-        assert_eq!(msg, r#"[{"x":3,"y":4,"color":7}]"#);
+        assert_eq!(msg, r#"[{"x":3,"y":4,"color":"e50000"}]"#);
     }
 
     #[tokio::test]

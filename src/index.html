@@ -58,6 +58,19 @@
         border-color: #fff;
         transform: scale(1.12);
       }
+      .swatch.pipette {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        background: #171a21;
+        border-color: #3a414f;
+        font-size: 15px;
+        line-height: 1;
+      }
+      .swatch.pipette:hover {
+        background: #1f242e;
+      }
       #zoombar {
         display: flex;
         align-items: center;
@@ -216,6 +229,7 @@
   <body>
     <h1>🎨 Pixelflux <span class="hint">— drag to paint · scroll to zoom · space-drag to pan</span></h1>
     <div id="palette"></div>
+    <input type="color" id="colorpicker" value="#e50000" hidden />
     <div id="zoombar">
       <button id="zoomout" title="Zoom out">−</button>
       <span id="zoomlevel">100%</span>
@@ -255,10 +269,12 @@
       let WIDTH = 200,
         HEIGHT = 200,
         PALETTE = [],
-        paletteRGB = [],
-        selected = 5,
+        selected = "e50000", // current colour, 6 hex digits (no '#')
+        recent = JSON.parse(localStorage.getItem("pixelflux_recent") || "[]"),
         painting = false,
         token = localStorage.getItem("pixelflux_token") || "";
+
+      const noHash = (c) => c.replace("#", "").toLowerCase();
 
       // Stable id per browser tab so SSE reconnects don't inflate the viewer count.
       const cid =
@@ -271,6 +287,7 @@
       const grid = document.getElementById("grid");
       const ctx = grid.getContext("2d");
       const paletteEl = document.getElementById("palette");
+      const colorInput = document.getElementById("colorpicker");
       const statusEl = document.getElementById("status");
       const viewport = document.getElementById("viewport");
       const gridlines = document.getElementById("gridlines");
@@ -424,14 +441,6 @@
         viewport.style.cursor = moveMode ? "grab" : "crosshair";
       };
 
-      // Hex colour -> [r, g, b] for fast full-canvas redraws via ImageData.
-      function hexRGB(h) {
-        h = String(h).replace("#", "");
-        if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-        const n = parseInt(h, 16) || 0;
-        return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
-      }
-
       // Map a pointer event to a pixel coordinate (works through the transform).
       function pixelFromEvent(e) {
         const rect = grid.getBoundingClientRect();
@@ -459,22 +468,53 @@
         } catch (_) {}
       });
 
+      function addSwatch(hex, isPipette) {
+        const s = document.createElement(isPipette ? "button" : "div");
+        s.className = "swatch";
+        if (isPipette) {
+          s.classList.add("pipette");
+          s.title = "Pick any colour";
+          s.textContent = "🎨";
+          s.onclick = () => colorInput.click();
+        } else {
+          if (hex === selected) s.classList.add("active");
+          s.style.background = "#" + hex;
+          s.dataset.color = hex;
+          s.title = "#" + hex;
+          s.onclick = () => selectColor(hex);
+        }
+        paletteEl.appendChild(s);
+      }
+
+      // Presets + recently picked colours (de-duplicated) + the pipette button.
       function buildPalette() {
         paletteEl.innerHTML = "";
-        PALETTE.forEach((color, i) => {
-          const s = document.createElement("div");
-          s.className = "swatch" + (i === selected ? " active" : "");
-          s.style.background = color;
-          s.title = "#" + i.toString(16);
-          s.onclick = () => {
-            selected = i;
-            document
-              .querySelectorAll(".swatch")
-              .forEach((el, idx) => el.classList.toggle("active", idx === selected));
-          };
-          paletteEl.appendChild(s);
+        const seen = new Set();
+        [...PALETTE.map(noHash), ...recent].forEach((hex) => {
+          if (!seen.has(hex)) {
+            seen.add(hex);
+            addSwatch(hex, false);
+          }
         });
+        addSwatch(null, true);
       }
+
+      function selectColor(hex) {
+        selected = noHash(hex);
+        colorInput.value = "#" + selected;
+        document
+          .querySelectorAll(".swatch")
+          .forEach((el) => el.classList.toggle("active", el.dataset.color === selected));
+      }
+
+      // Picking from the native colour picker selects it and remembers it.
+      colorInput.onchange = () => {
+        const hex = noHash(colorInput.value);
+        recent = [hex, ...recent.filter((c) => c !== hex)].slice(0, 10);
+        localStorage.setItem("pixelflux_recent", JSON.stringify(recent));
+        selected = hex;
+        buildPalette();
+      };
 
       function buildGrid() {
         // One bitmap pixel per cell; CSS transform scales it up (crisp).
@@ -482,8 +522,8 @@
         grid.height = HEIGHT;
       }
 
-      function setCell(i, idx) {
-        ctx.fillStyle = PALETTE[idx] || PALETTE[0];
+      function setCell(i, hex) {
+        ctx.fillStyle = "#" + hex;
         ctx.fillRect(i % WIDTH, (i / WIDTH) | 0, 1, 1);
       }
 
@@ -491,10 +531,10 @@
         const img = ctx.createImageData(WIDTH, HEIGHT);
         const d = img.data;
         for (let i = 0; i < WIDTH * HEIGHT; i++) {
-          const c = paletteRGB[parseInt(pixels[i], 16) || 0] || [0, 0, 0];
-          d[i * 4] = c[0];
-          d[i * 4 + 1] = c[1];
-          d[i * 4 + 2] = c[2];
+          const n = parseInt(pixels.substr(i * 6, 6), 16) || 0;
+          d[i * 4] = (n >> 16) & 255;
+          d[i * 4 + 1] = (n >> 8) & 255;
+          d[i * 4 + 2] = n & 255;
           d[i * 4 + 3] = 255;
         }
         ctx.putImageData(img, 0, 0);
@@ -507,7 +547,6 @@
           WIDTH = data.width;
           HEIGHT = data.height;
           PALETTE = data.palette;
-          paletteRGB = PALETTE.map(hexRGB);
           if (grid.width !== WIDTH || grid.height !== HEIGHT) {
             buildPalette();
             buildGrid();
@@ -524,7 +563,7 @@
           gate.hidden = false;
           return;
         }
-        ctx.fillStyle = PALETTE[selected]; // optimistic
+        ctx.fillStyle = "#" + selected; // optimistic
         ctx.fillRect(x, y, 1, 1);
         const r = await fetch("/api/pixel", {
           method: "POST",
