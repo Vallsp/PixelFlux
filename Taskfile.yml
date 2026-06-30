@@ -110,7 +110,8 @@ tasks:
     desc: Render the Marp deck to a standalone HTML file (docs/slides/out)
     dir: docs/slides
     cmds:
-      - mkdir -p out
+      - mkdir -p out/img
+      - cp img/* out/img/
       - marp overview.md --html --theme-set theme -o out/index.html
       - 'echo "Slides → docs/slides/out/index.html"'
 
@@ -125,7 +126,8 @@ tasks:
     deps:
       - docs:build
     cmds:
-      - mkdir -p docs/book/out/slides
+      - mkdir -p docs/book/out/slides/img
+      - cp docs/slides/img/* docs/book/out/slides/img/
       - marp docs/slides/overview.md --html --theme-set docs/slides/theme -o docs/book/out/slides/index.html
       - 'echo "Slides published into docs/book/out/slides/"'
 
