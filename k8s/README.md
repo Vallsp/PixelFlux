@@ -47,6 +47,22 @@ route — last applied wins).
 > k3s. For a remote/multi-node cluster, push to a registry (e.g. GHCR) and point
 > `image:` there with `imagePullPolicy: Always`.
 
+### Admin panel (optional Secret)
+
+The Deployment reads `ADMIN_PASSWORD` from an **optional** Secret named
+`pixelflux-admin`, so the `/admin` dashboard stays disabled until you create it.
+This works on a running cluster (Argo CD or `task deploy`) without re-running the
+bring-up — create the Secret, then restart the pods so the env var is injected:
+
+```bash
+kubectl -n pixelflux create secret generic pixelflux-admin \
+  --from-literal=password='a-long-random-secret'
+kubectl -n pixelflux rollout restart deploy/pixelflux
+```
+
+The Secret lives outside the kustomization, so Argo CD's `prune`/`selfHeal`
+won't touch it. Rotate the password by updating the Secret and restarting again.
+
 ### Useful
 
 ```bash

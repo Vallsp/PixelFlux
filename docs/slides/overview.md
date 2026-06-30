@@ -65,7 +65,7 @@ Navigateur ──HTTP──▶  axum  ──┐
 - Une surface HTTP réduite et explicite :
   - `GET /api/canvas` — snapshot complet · `POST /api/pixel` — peindre une case
   - `GET /api/events` — flux **SSE** des modifications en direct
-  - `GET /health` · `GET /info` — nom, version, instance
+  - `GET /health` · `GET /info` — nom, version, instance · page `/admin`
 - L'interface est un unique `index.html` embarqué — sans bundler, sans framework.
 
 <!-- Note : Le canevas est minuscule, donc un snapshot coûte peu : un nouveau client récupère /api/canvas une fois, puis suit /api/events pour les deltas. /info expose la version et l'identifiant du pod affichés dans le pied de page. Le front-end est volontairement un seul fichier HTML embarqué : cela garde le conteneur léger et l'application facile à auditer. -->
@@ -80,6 +80,17 @@ Navigateur ──HTTP──▶  axum  ──┐
 - Les clients nouveaux ou en retard **se resynchronisent** via un `GET /api/canvas` complet.
 
 <!-- Note : L'application ne fait que pousser du serveur vers le client, donc SSE convient mieux que WebSockets — plus simple, compatible avec les proxys et capable de se reconnecter seul. Le pub/sub de Redis est ce qui rend le multi-instance correct : sans lui, une peinture n'atteindrait que les clients du même pod. Le choix est documenté dans l'ADR 0004. -->
+
+---
+
+# Administration en direct
+
+- Une page **`/admin`** protégée (mot de passe via `ADMIN_PASSWORD`, session `HttpOnly`) — **désactivée par défaut**.
+- **Réglages à chaud, sans redémarrage** : rate limit (on/off), fenêtre, délai d'inscription, TTL token, taille du canevas, fan-out SSE.
+- **Modération** : maintenance (lecture seule), reset du canevas, palette imposée (rejet serveur hors palette), inscriptions ouvertes/fermées, annonce.
+- Persisté dans Redis et propagé à **tous les pods** via un canal pub/sub `config:events`.
+
+<!-- Note : La même architecture Redis qui partage le canevas sert à diffuser la configuration : un changement dans l'admin est écrit dans Redis et publié sur config:events, et chaque réplica recharge ses réglages en direct. La page est sécurisée (pas de mot de passe par défaut, comparaison à temps constant, cookie HttpOnly/SameSite) et la palette peut être imposée côté serveur, pas seulement masquée dans l'UI. -->
 
 ---
 
@@ -186,7 +197,7 @@ Chaque push et chaque PR passent par le **même `nix develop`** sur GitHub Actio
 
 # La suite
 
-- **Comptes et quotas** — il y a déjà des jetons anti-spam (`/register` volontairement lent) et une limite de 4096 px / 30 s par jeton ; l'étape suivante serait de vrais comptes.
+- **Comptes et SSO** — jetons anti-spam et quotas sont déjà réglables depuis la page admin ; l'étape suivante serait de vrais comptes authentifiés.
 - **Historique durable** — capturer et rejouer le canevas au-delà de l'état vif de Redis.
 - **Observabilité** — métriques et tracing le long du chemin SSE / Redis.
 - Périmètre assumé : ce sont des omissions délibérées, pas des oublis.

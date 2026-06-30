@@ -41,7 +41,7 @@ flowchart LR
     end
 
     subgraph SRV["pixelflux (Rust / axum)"]
-        R["Routes<br/>/ &middot; /health &middot; /info<br/>/api/canvas &middot; /api/pixel &middot; /api/events"]
+        R["Routes<br/>/ &middot; /admin &middot; /health &middot; /info<br/>/api/canvas &middot; /api/pixel &middot; /api/events"]
         ST["AppState<br/>canvas access + broadcast channel"]
         R --> ST
     end
@@ -209,8 +209,24 @@ ADMIN_PASSWORD='a-long-random-secret' task run    # then open /admin
 Login opens a short-lived, `HttpOnly` `SameSite=Strict` session cookie; the
 password is compared in constant time and never stored. Settings are persisted
 in Redis and propagated to every replica over a `config:events` pub/sub channel,
-so a change applies fleet-wide instantly (in-memory when Redis is absent). In
-Kubernetes, supply `ADMIN_PASSWORD` from a Secret and serve `/admin` over HTTPS.
+so a change applies fleet-wide instantly (in-memory when Redis is absent).
+
+### Enabling the admin on Kubernetes
+
+The Deployment reads `ADMIN_PASSWORD` from an **optional** Secret named
+`pixelflux-admin` (so the admin stays off until you create it). Create it once,
+then restart the pods so the env var is injected — no `task k3s:up` re-run
+needed:
+
+```bash
+kubectl -n pixelflux create secret generic pixelflux-admin \
+  --from-literal=password='a-long-random-secret'
+kubectl -n pixelflux rollout restart deploy/pixelflux
+```
+
+The Secret is created outside GitOps, so Argo CD's `prune`/`selfHeal` leaves it
+alone. Serve `/admin` over HTTPS in production. To rotate the password, update
+the Secret and `rollout restart` again.
 
 <!-- ANCHOR_END: admin -->
 
