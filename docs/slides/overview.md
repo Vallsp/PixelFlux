@@ -72,7 +72,7 @@ Navigateur ──HTTP──▶  axum  ──┐
 
 ---
 
-# Fan-out en temps réel
+# Real-time fan-out
 
 - **SSE, pas WebSockets** (ADR 0004) : un flux unidirectionnel serveur→client suffit.
 - Il circule en HTTP simple, se reconnecte tout seul et traverse proprement les proxys.
