@@ -105,7 +105,9 @@ tasks:
   links:
     desc: Check docs for broken links (lychee)
     cmds:
-      - lychee .
+      # --root-dir resolves root-relative hrefs in local HTML (e.g. admin.html's
+      # `href="/"`) against src/, the embedded UI's webroot.
+      - lychee --root-dir "$(pwd)/src" .
 
   docs:lint:
     desc: All documentation checks (prose + links)
