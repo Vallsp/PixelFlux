@@ -100,22 +100,48 @@ paths:
                     description: width*height*6 hex chars — an rrggbb RGB colour per pixel
   /register:
     post:
-      summary: Issue a paint token
+      summary: Register a player and issue a paint token
       description: >-
-        Returns a random token (UUID v4) to send as the `X-Token` header when
-        painting. Deliberately slow (~5s) to make mass token creation expensive.
+        Reserves a **unique** pseudo and returns a random token (UUID v4) bound
+        to it server-side. Send the token as the `X-Token` header when painting;
+        the pseudo credited in the leaderboard is derived from the token, so it
+        cannot be spoofed from a paint request. Deliberately slow (~5s) to make
+        mass token creation expensive.
       operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [player]
+              properties:
+                player:
+                  type: string
+                  description: Desired pseudo (sanitised server-side; max 20 chars)
+                  example: Alice
       responses:
         "200":
-          description: A new token
+          description: A new token bound to the (sanitised) pseudo
           content:
             application/json:
               schema:
                 type: object
+                required: [token, name]
                 properties:
                   token:
                     type: string
                     example: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                  name:
+                    type: string
+                    description: The sanitised pseudo actually bound to the token
+                    example: Alice
+        "400":
+          description: Invalid (empty after sanitisation) pseudo
+        "409":
+          description: Pseudo already taken
+        "503":
+          description: Registration is closed by an admin
   /api/pixel:
     post:
       summary: Paint a single pixel
@@ -215,7 +241,28 @@ paths:
                   Each event's data is a coalesced batch — a JSON array
                   [{"x":int,"y":int,"color":int}, ...] flushed on a fixed tick
                   (default 16ms, SSE_COALESCE_MS). A reset event is the object
-                  {"clear":true}.
+                  {"clear":true}. A named `leaderboard` event carries the top-10.
+  /api/leaderboard:
+    get:
+      summary: Top players by pixels painted
+      description: >-
+        Top-10 players by cumulative pixels painted. Names are the pseudos bound
+        to tokens at registration. Also pushed live as a named `leaderboard` SSE
+        event on `/api/events`.
+      operationId: getLeaderboard
+      responses:
+        "200":
+          description: Ranked list, highest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  required: [name, count]
+                  properties:
+                    name: { type: string, example: Alice }
+                    count: { type: integer, example: 128 }
   /admin:
     get:
       summary: Admin dashboard (HTML)

@@ -364,17 +364,9 @@
     <div id="gate" hidden>
       <div class="gate-card">
         <h2>Rejoindre le canvas</h2>
-        <!-- Step 1: choose a pseudo -->
-        <div id="gate-step-pseudo">
-          <p>Choisis un pseudo pour le classement.</p>
-          <input type="text" id="pseudoinput" class="gate-input" maxlength="20" placeholder="Ton pseudo…" autocomplete="off" />
-          <button id="pseudobtn">Continuer →</button>
-        </div>
-        <!-- Step 2: register an anti-spam token -->
-        <div id="gate-step-token" hidden>
-          <p id="gatemsg">Un jeton anti-spam est généré côté serveur (~5&nbsp;s).</p>
-          <button id="joinbtn">Rejoindre</button>
-        </div>
+        <p id="pseudomsg">Choisis un pseudo — un jeton anti-spam est généré côté serveur (~5&nbsp;s).</p>
+        <input type="text" id="pseudoinput" class="gate-input" maxlength="20" placeholder="Ton pseudo…" autocomplete="off" />
+        <button id="joinbtn">Rejoindre</button>
       </div>
     </div>
 
@@ -691,12 +683,8 @@
       }
 
       async function paint(x, y) {
-        if (!username) {
-          showGatePseudo();
-          return;
-        }
         if (!token) {
-          showGateToken();
+          showGate();
           return;
         }
         ctx.fillStyle = "#" + selected; // optimistic
@@ -704,7 +692,8 @@
         const r = await fetch("/api/pixel", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-Token": token },
-          body: JSON.stringify({ x, y, color: selected, player: username }),
+          // No pseudo here: the server credits the name bound to the token.
+          body: JSON.stringify({ x, y, color: selected }),
         });
         if (r.status === 401) {
           // Token expired or unknown — clear it and prompt to re-join.
@@ -810,77 +799,72 @@
         }
       }
 
-      // Gate helpers
+      // Gate: a single step — choosing the pseudo generates the token (the
+      // pseudo is bound to it server-side) after the ~5s anti-spam delay.
       const gate = document.getElementById("gate");
-      const stepPseudo = document.getElementById("gate-step-pseudo");
-      const stepToken = document.getElementById("gate-step-token");
-
-      function showGatePseudo() {
-        stepPseudo.hidden = false;
-        stepToken.hidden = true;
-        gate.hidden = false;
-      }
-      function showGateToken() {
-        stepPseudo.hidden = true;
-        stepToken.hidden = false;
-        gate.hidden = false;
-      }
-
-      // Pseudo step
       const pseudoInput = document.getElementById("pseudoinput");
-      const pseudoBtn = document.getElementById("pseudobtn");
-      if (username) pseudoInput.value = username;
-      pseudoBtn.onclick = function () {
-        const val = pseudoInput.value.trim();
-        if (!val) return;
-        username = val;
-        localStorage.setItem("pixelflux_username", username);
-        if (token) {
-          gate.hidden = true;
-        } else {
-          showGateToken();
-        }
-      };
-      pseudoInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") pseudoBtn.click();
-      });
-
-      // Token registration: minting a token is deliberately slow (~5s), so show
-      // a loading state on the button while we wait.
+      const pseudoMsg = document.getElementById("pseudomsg");
       const joinBtn = document.getElementById("joinbtn");
+      if (username) pseudoInput.value = username;
+
+      function showGate() {
+        gate.hidden = false;
+        pseudoInput.focus();
+      }
+
       async function register() {
+        const val = pseudoInput.value.trim();
+        if (!val) {
+          pseudoMsg.textContent = "Entre un pseudo pour continuer.";
+          return;
+        }
         joinBtn.disabled = true;
         joinBtn.innerHTML = '<span class="spinner"></span> Connexion… (~5 s)';
         try {
-          const r = await fetch("/register", { method: "POST" });
+          // Choosing the pseudo mints the bound token (slow, anti-spam).
+          const r = await fetch("/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ player: val }),
+          });
           if (r.status === 503) {
-            document.getElementById("gatemsg").textContent =
-              "Les inscriptions sont temporairement fermées.";
+            pseudoMsg.textContent = "Les inscriptions sont temporairement fermées.";
+            return;
+          }
+          if (r.status === 409) {
+            pseudoMsg.textContent = "Ce pseudo est déjà pris, choisis-en un autre.";
+            return;
+          }
+          if (!r.ok) {
+            pseudoMsg.textContent = "Pseudo invalide, réessaie.";
             return;
           }
           const d = await r.json();
           token = d.token;
+          username = d.name; // the sanitised pseudo the server actually bound
           localStorage.setItem("pixelflux_token", token);
+          localStorage.setItem("pixelflux_username", username);
           gate.hidden = true;
         } catch (e) {
-          /* leave the gate open so the user can retry */
+          pseudoMsg.textContent = "Erreur réseau, réessaie.";
         } finally {
           joinBtn.disabled = false;
           joinBtn.textContent = "Rejoindre";
         }
       }
       joinBtn.onclick = register;
+      pseudoInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") register();
+      });
 
       (async function start() {
         await fullSync();
         connect();
         refreshInstance();
         refreshLeaderboard();
-        // Decide which gate step (if any) to show on arrival.
-        if (!username) {
-          showGatePseudo();
-        } else if (!token) {
-          showGateToken();
+        // No valid token yet → show the join gate.
+        if (!token) {
+          showGate();
         }
         // Safety-net reconciliation (covers multi-instance / missed events).
         setInterval(fullSync, 10000);

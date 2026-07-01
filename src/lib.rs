@@ -25,7 +25,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -57,6 +57,9 @@ const ADMIN_SESSION_PREFIX: &str = "admin:session:";
 const ADMIN_SESSION_TTL_SECS: u64 = 3_600;
 /// Sorted-set key in Redis for per-player pixel counts.
 const LEADERBOARD_KEY: &str = "leaderboard:scores";
+/// Prefix for the pseudo→token reservation keys (`name:{normalised}` = token),
+/// which make each pseudo unique and bound to one token.
+const NAME_KEY_PREFIX: &str = "name:";
 
 // Defaults for the runtime-tunable `Settings`. The live values are held in
 // `AppState` (and Redis); these are only the starting point.
@@ -304,6 +307,15 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// Why a registration was refused.
+#[derive(Debug, thiserror::Error)]
+pub enum RegisterError {
+    #[error("pseudo is empty or invalid")]
+    InvalidName,
+    #[error("pseudo is already taken")]
+    NameTaken,
+}
+
 /// Keep only alphanumeric characters, spaces, underscores, and hyphens;
 /// trim whitespace; cap at 20 code-points.
 fn sanitize_name(name: &str) -> String {
@@ -482,8 +494,10 @@ pub struct AppState {
     tx: broadcast::Sender<String>,
     /// Pending pixel updates, flushed to SSE clients on a tick (coalesced).
     buffer: PixelBuffer,
-    /// Issued tokens (used only when Redis is unavailable).
-    tokens: Arc<Mutex<HashSet<String>>>,
+    /// Issued tokens → bound player name (used only when Redis is unavailable).
+    tokens: Arc<Mutex<HashMap<String, String>>>,
+    /// Reserved pseudos (normalised) → token, for uniqueness (fallback, no Redis).
+    names: Arc<Mutex<HashMap<String, String>>>,
     /// Per-token paint counts + window start (fallback rate limiter).
     rates: Arc<Mutex<HashMap<String, (u64, Instant)>>>,
     /// Live viewers by connection id → last heartbeat (fallback when no Redis).
@@ -586,7 +600,8 @@ impl AppState {
             fallback_lb: Arc::new(Mutex::new(HashMap::new())),
             tx,
             buffer,
-            tokens: Arc::new(Mutex::new(HashSet::new())),
+            tokens: Arc::new(Mutex::new(HashMap::new())),
+            names: Arc::new(Mutex::new(HashMap::new())),
             rates: Arc::new(Mutex::new(HashMap::new())),
             online: Arc::new(Mutex::new(HashMap::new())),
             settings,
@@ -770,15 +785,16 @@ impl AppState {
         Ok(())
     }
 
-    /// Persist a token (Redis when available so every replica accepts it,
-    /// otherwise in-process). No artificial delay — see `register_token`.
+    /// Persist a bare token bound to no pseudo (used by tests to mint a token
+    /// without going through the slow, name-reserving registration).
+    #[cfg(test)]
     async fn store_token(&self, token: &str) {
         let ttl = self.settings().token_ttl_secs;
         if let Some(conn) = &self.redis {
             let mut conn = conn.clone();
             let _ = redis::cmd("SET")
                 .arg(format!("token:{token}"))
-                .arg(1)
+                .arg("")
                 .arg("EX")
                 .arg(ttl)
                 .query_async::<String>(&mut conn)
@@ -788,19 +804,115 @@ impl AppState {
                 .query_async::<i64>(&mut conn)
                 .await;
         } else {
-            self.tokens.lock().unwrap().insert(token.to_string());
+            self.tokens
+                .lock()
+                .unwrap()
+                .insert(token.to_string(), String::new());
             *self.tokens_issued.lock().unwrap() += 1;
         }
     }
 
-    /// Issue a fresh random token. Deliberately slow (`register_delay_secs`) so a
-    /// client can't cheaply mint a new identity on every paint request.
-    pub async fn register_token(&self) -> String {
-        let token = uuid::Uuid::new_v4().to_string();
+    /// Register a player: reserve a **unique** pseudo and mint a token bound to
+    /// it. The binding lives server-side, so the pseudo can't be spoofed from a
+    /// paint request. Deliberately slow (`register_delay_secs`) as anti-abuse.
+    ///
+    /// Returns `(token, sanitized_name)`, or an error if the pseudo is invalid
+    /// or already taken.
+    pub async fn register_player(&self, name: &str) -> Result<(String, String), RegisterError> {
+        let safe = sanitize_name(name);
+        if safe.is_empty() {
+            return Err(RegisterError::InvalidName);
+        }
+        let key = safe.to_lowercase();
+        let ttl = self.settings().token_ttl_secs;
         let delay = self.settings().register_delay_secs;
+
+        // Fast pre-check so an obviously-taken name fails without the delay.
+        if self.name_taken(&key).await {
+            return Err(RegisterError::NameTaken);
+        }
         tokio::time::sleep(Duration::from_secs(delay)).await;
-        self.store_token(&token).await;
-        token
+
+        let token = uuid::Uuid::new_v4().to_string();
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            // Atomically reserve the name; `NX` fails if a peer grabbed it first.
+            let reserved: Option<String> = redis::cmd("SET")
+                .arg(format!("{NAME_KEY_PREFIX}{key}"))
+                .arg(&token)
+                .arg("NX")
+                .arg("EX")
+                .arg(ttl)
+                .query_async(&mut conn)
+                .await
+                .ok()
+                .flatten();
+            if reserved.is_none() {
+                return Err(RegisterError::NameTaken);
+            }
+            let _ = redis::cmd("SET")
+                .arg(format!("token:{token}"))
+                .arg(&safe)
+                .arg("EX")
+                .arg(ttl)
+                .query_async::<String>(&mut conn)
+                .await;
+            let _ = redis::cmd("INCR")
+                .arg(STATS_TOKENS_KEY)
+                .query_async::<i64>(&mut conn)
+                .await;
+        } else {
+            let mut names = self.names.lock().unwrap();
+            if names.contains_key(&key) {
+                return Err(RegisterError::NameTaken);
+            }
+            names.insert(key, token.clone());
+            drop(names);
+            self.tokens
+                .lock()
+                .unwrap()
+                .insert(token.clone(), safe.clone());
+            *self.tokens_issued.lock().unwrap() += 1;
+        }
+        Ok((token, safe))
+    }
+
+    /// Whether a normalised pseudo is currently reserved.
+    async fn name_taken(&self, key: &str) -> bool {
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            redis::cmd("EXISTS")
+                .arg(format!("{NAME_KEY_PREFIX}{key}"))
+                .query_async(&mut conn)
+                .await
+                .unwrap_or(false)
+        } else {
+            self.names.lock().unwrap().contains_key(key)
+        }
+    }
+
+    /// The pseudo bound to `token`, if any (empty binding = none).
+    pub async fn player_for_token(&self, token: &str) -> Option<String> {
+        if token.is_empty() {
+            return None;
+        }
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let name: Option<String> = redis::cmd("GET")
+                .arg(format!("token:{token}"))
+                .query_async(&mut conn)
+                .await
+                .ok()
+                .flatten();
+            name.filter(|n| !n.is_empty())
+        } else {
+            self.tokens
+                .lock()
+                .unwrap()
+                .get(token)
+                .filter(|n| !n.is_empty())
+                .cloned()
+        }
     }
 
     /// Validate `token` and count this paint against its budget. Returns
@@ -844,7 +956,7 @@ impl AppState {
                 }
             }
         } else {
-            if !self.tokens.lock().unwrap().contains(token) {
+            if !self.tokens.lock().unwrap().contains_key(token) {
                 return Err(ApiError::Unauthorized);
             }
             if cfg.rate_limit_enabled {
@@ -1156,7 +1268,12 @@ struct PixelRequest {
     y: usize,
     /// RGB colour as 6 hex digits (`rrggbb`), with or without a leading `#`.
     color: String,
-    player: Option<String>,
+}
+
+/// Registration payload: the pseudo the visitor wants to claim.
+#[derive(Deserialize)]
+struct RegisterRequest {
+    player: String,
 }
 
 #[derive(Serialize)]
@@ -1167,6 +1284,8 @@ struct PixelResponse {
 #[derive(Serialize)]
 struct RegisterResponse {
     token: String,
+    /// The sanitised pseudo the server actually bound to the token.
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -1209,9 +1328,10 @@ async fn get_canvas(State(state): State<AppState>) -> Json<CanvasResponse> {
     })
 }
 
-/// Issue a token. Slow on purpose (anti-abuse) — see `register_token`. Returns
-/// 503 when an admin has closed registration.
-async fn register(State(state): State<AppState>) -> Response {
+/// Register a player and issue a token bound to their pseudo. Slow on purpose
+/// (anti-abuse). Returns 503 when registration is closed, 400 for an invalid
+/// pseudo, and 409 when the pseudo is already taken.
+async fn register(State(state): State<AppState>, Json(req): Json<RegisterRequest>) -> Response {
     if !state.settings().registration_open {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1222,10 +1342,25 @@ async fn register(State(state): State<AppState>) -> Response {
         )
             .into_response();
     }
-    Json(RegisterResponse {
-        token: state.register_token().await,
-    })
-    .into_response()
+    match state.register_player(&req.player).await {
+        Ok((token, name)) => Json(RegisterResponse { token, name }).into_response(),
+        Err(RegisterError::InvalidName) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                ok: false,
+                error: "invalid pseudo".into(),
+            }),
+        )
+            .into_response(),
+        Err(RegisterError::NameTaken) => (
+            StatusCode::CONFLICT,
+            Json(ErrorResponse {
+                ok: false,
+                error: "pseudo already taken".into(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn put_pixel(
@@ -1238,8 +1373,11 @@ async fn put_pixel(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     state.authorize(token).await?;
+    // The player name comes from the server-side token binding, never from the
+    // request body — so a client can't paint under someone else's pseudo.
+    let player = state.player_for_token(token).await;
     state
-        .set_pixel(req.x, req.y, &req.color, req.player.as_deref())
+        .set_pixel(req.x, req.y, &req.color, player.as_deref())
         .await?;
     Ok(Json(PixelResponse { ok: true }))
 }
@@ -1691,12 +1829,48 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/register")
-                    .body(Body::empty())
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"player":"Alice"}"#))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn register_binds_a_unique_pseudo_to_the_token() {
+        let state = AppState::new(None).await;
+        // Skip the anti-abuse delay in the test.
+        let mut s = state.settings();
+        s.register_delay_secs = 0;
+        state.update_settings(s).await;
+
+        let (token, name) = state.register_player("Alice").await.expect("register");
+        assert_eq!(name, "Alice");
+        // The token resolves back to its bound pseudo (server-side, unspoofable).
+        assert_eq!(
+            state.player_for_token(&token).await.as_deref(),
+            Some("Alice")
+        );
+
+        // Same pseudo (case-insensitive) is refused.
+        assert!(matches!(
+            state.register_player("alice").await,
+            Err(RegisterError::NameTaken)
+        ));
+        // Empty/invalid pseudo is refused.
+        assert!(matches!(
+            state.register_player("   ").await,
+            Err(RegisterError::InvalidName)
+        ));
+    }
+
+    #[tokio::test]
+    async fn unknown_token_has_no_pseudo() {
+        let state = AppState::new(None).await;
+        assert_eq!(state.player_for_token("nope").await, None);
+        assert_eq!(state.player_for_token("").await, None);
     }
 
     #[tokio::test]

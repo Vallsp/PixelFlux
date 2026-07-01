@@ -172,15 +172,17 @@ Rust ([axum]) · [Nix] flake (dev shell + container) · [go-task] · [lefthook] 
 
 ## API
 
-| Method | Route         | Description                         |
-| ------ | ------------- | ----------------------------------- |
-| GET    | `/`           | Web UI                              |
-| GET    | `/health`     | Liveness probe                      |
-| GET    | `/info`       | Name, version, and serving instance |
-| GET    | `/api/canvas` | Whole canvas                        |
-| POST   | `/api/pixel`  | Paint a pixel `{x, y, color}`       |
-| GET    | `/api/events` | Live pixel stream (SSE)             |
-| GET    | `/admin`      | Admin dashboard (needs a password)  |
+| Method | Route              | Description                               |
+| ------ | ------------------ | ----------------------------------------- |
+| GET    | `/`                | Web UI                                    |
+| GET    | `/health`          | Liveness probe                            |
+| GET    | `/info`            | Name, version, and serving instance       |
+| GET    | `/api/canvas`      | Whole canvas                              |
+| POST   | `/register`        | Claim a unique pseudo → token bound to it |
+| POST   | `/api/pixel`       | Paint a pixel `{x, y, color}`             |
+| GET    | `/api/events`      | Live pixel stream (SSE)                   |
+| GET    | `/api/leaderboard` | Top-10 players by pixels painted          |
+| GET    | `/admin`           | Admin dashboard (needs a password)        |
 
 <!-- ANCHOR_END: api -->
 

@@ -18,13 +18,17 @@ jsonpath "$.palette" count == 16
 jsonpath "$.picker" isBoolean
 jsonpath "$.pixels" isString
 
-# Register a token (deliberately slow: ~5s anti-abuse delay)
+# Register a player + token (deliberately slow: ~5s anti-abuse delay).
+# The pseudo is bound to the token server-side.
 POST {{host}}/register
+Content-Type: application/json
+{ "player": "ContractBot" }
 HTTP 200
 [Captures]
 token: jsonpath "$.token"
 [Asserts]
 jsonpath "$.token" isString
+jsonpath "$.name" == "ContractBot"
 
 # Painting without a token is rejected
 POST {{host}}/api/pixel
@@ -52,6 +56,13 @@ HTTP 400
 [Asserts]
 jsonpath "$.ok" == false
 jsonpath "$.error" isString
+
+# Leaderboard credits the token's bound pseudo (proves the binding end-to-end)
+GET {{host}}/api/leaderboard
+HTTP 200
+[Asserts]
+jsonpath "$" count >= 1
+jsonpath "$[*].name" includes "ContractBot"
 
 # Info exposes the serving instance (used to visualise load balancing)
 GET {{host}}/info

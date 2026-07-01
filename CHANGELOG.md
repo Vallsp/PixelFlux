@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pub/sub channel.
   Auth uses a constant-time password check and an `HttpOnly`, `SameSite=Strict`
   session cookie.
+- Players & leaderboard: each visitor registers a **unique pseudo** that is
+  bound to their token server-side, so the leaderboard credit is derived from
+  the token (not the paint request) and can't be spoofed. `POST /register` takes
+  the pseudo (409 if taken); `GET /api/leaderboard` returns the top-10, also
+  pushed live as a named `leaderboard` SSE event.
 - Documentation: README with diagrams, CONTRIBUTING, per-directory READMEs,
   AGENTS.md, and Architecture Decision Records.
 
