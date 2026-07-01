@@ -182,6 +182,7 @@ Rust ([axum]) · [Nix] flake (dev shell + container) · [go-task] · [lefthook] 
 | POST   | `/api/pixel`       | Paint a pixel `{x, y, color}`             |
 | GET    | `/api/events`      | Live pixel stream (SSE)                   |
 | GET    | `/api/leaderboard` | Top-10 players by pixels painted          |
+| GET    | `/api/ownership`   | Territory % — pixels each player owns now |
 | GET    | `/admin`           | Admin dashboard (needs a password)        |
 
 <!-- ANCHOR_END: api -->
@@ -200,8 +201,8 @@ preset **colour palette** (optionally hide the native colour picker, or
 API too — not just hidden in the UI), set a custom **maintenance message**, post a
 site-wide **announcement banner**, **open or close registration**, **remove a
 player** (revokes their token, frees their pseudo, drops them from the
-leaderboard), and watch live stats (viewers online, pixels painted, tokens
-issued).
+leaderboard), **revoke legacy unbound tokens**, and watch live stats (viewers
+online, pixels painted, tokens issued).
 
 The admin is **disabled unless** the `ADMIN_PASSWORD` environment variable is
 set, so it is off by default. Set it to turn it on:

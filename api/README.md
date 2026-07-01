@@ -15,7 +15,8 @@ executable contract test suite.
 | POST   | `/register`        | Register a **unique pseudo** → `{"token", "name"}`. The pseudo is bound to the token server-side. Slow (~5s) anti-abuse (400 invalid · 409 taken · 503 closed)    |
 | POST   | `/api/pixel`       | Paint one pixel → header `X-Token` + body `{"x", "y", "color"}` (`color` = `rrggbb` hex) → `{"ok": true}` (400 invalid · 401 no/unknown token · 429 rate limited) |
 | GET    | `/api/events`      | Live pixel stream (SSE); coalesced **batches** `[{"x","y","color"}, …]` + a named `leaderboard` event (top-10)                                                    |
-| GET    | `/api/leaderboard` | Top-10 players by pixels painted → `[{"name","count"}, …]`                                                                                                        |
+| GET    | `/api/leaderboard` | Top-10 players by **pixels painted** (cumulative) → `[{"name","count"}, …]`                                                                                       |
+| GET    | `/api/ownership`   | **Territory** — pixels each player currently owns → `{"total", "entries":[{"name","count","percent"}]}` (transfers when a pixel is overwritten)                   |
 | GET    | `/admin`           | Admin dashboard (enabled only when `ADMIN_PASSWORD` is set); tune limits, maintenance mode, reset canvas, live stats                                              |
 
 The canvas is **200×200** in **full RGB** — each pixel is any `rrggbb` colour

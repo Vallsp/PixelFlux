@@ -263,6 +263,36 @@ paths:
                   properties:
                     name: { type: string, example: Alice }
                     count: { type: integer, example: 128 }
+  /api/ownership:
+    get:
+      summary: Territory standings (current pixel ownership)
+      description: >-
+        How many pixels each player currently owns and their share of the whole
+        canvas. Unlike the cumulative leaderboard, ownership is transferred when
+        a pixel is overwritten.
+      operationId: getOwnership
+      responses:
+        "200":
+          description: Total canvas pixels and the top owners
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, entries]
+                properties:
+                  total:
+                    type: integer
+                    description: Total pixels on the canvas (width * height)
+                    example: 40000
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, count, percent]
+                      properties:
+                        name: { type: string, example: Alice }
+                        count: { type: integer, example: 512 }
+                        percent: { type: number, example: 1.28 }
   /admin:
     get:
       summary: Admin dashboard (HTML)
@@ -384,6 +414,26 @@ paths:
       responses:
         "200":
           description: Player removed (idempotent if the pseudo didn't exist)
+        "401":
+          description: Not authenticated
+  /admin/api/tokens/revoke-unbound:
+    post:
+      summary: Revoke legacy tokens with no bound pseudo
+      description: >-
+        Deletes every token that isn't backed by a matching pseudo reservation
+        (e.g. tokens issued before pseudo↔token binding). Returns how many were
+        revoked.
+      operationId: adminRevokeUnbound
+      responses:
+        "200":
+          description: Count of revoked tokens
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  revoked: { type: integer, example: 3 }
         "401":
           description: Not authenticated
 components:

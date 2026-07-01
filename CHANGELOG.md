@@ -43,7 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the token (not the paint request) and can't be spoofed. `POST /register` takes
   the pseudo (409 if taken); `GET /api/leaderboard` returns the top-10, also
   pushed live as a named `leaderboard` SSE event. Admins can **remove a player**
-  (revokes the token, frees the pseudo, drops them from the leaderboard).
+  (revokes the token, frees the pseudo, drops them from the leaderboard) and
+  **revoke legacy tokens** that carry no bound pseudo.
+- Territory / ownership: each pixel remembers its current owner, so
+  `GET /api/ownership` reports how many pixels each player owns and their **%
+  share of the canvas**. Ownership transfers when a pixel is overwritten (unlike
+  the cumulative leaderboard) and resets with the canvas.
 - Documentation: README with diagrams, CONTRIBUTING, per-directory READMEs,
   AGENTS.md, and Architecture Decision Records.
 

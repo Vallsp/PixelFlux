@@ -396,6 +396,10 @@
         <input type="text" id="player-del-name" maxlength="20" placeholder="Pseudo…" />
         <button class="danger" id="player-del-btn">Supprimer</button>
       </div>
+      <div class="row">
+        <button class="danger" id="revoke-unbound-btn">Révoquer les tokens sans pseudo</button>
+      </div>
+      <p class="hint">Révoque les anciens tokens (créés avant la liaison pseudo↔token) qui n'ont pas de pseudo valide.</p>
     </div>
 
     <div class="card hidden" id="dash-actions">
@@ -662,6 +666,16 @@
       $("player-del-name").addEventListener("keydown", (e) => {
         if (e.key === "Enter") deletePlayer($("player-del-name").value);
       });
+      $("revoke-unbound-btn").onclick = async () => {
+        if (!confirm("Révoquer tous les tokens sans pseudo valide ?")) return;
+        const r = await fetch("/admin/api/tokens/revoke-unbound", {
+          method: "POST",
+        });
+        if (!r.ok) return toast("Échec de la révocation", false);
+        const d = await r.json();
+        toast(d.revoked + " token(s) révoqué(s) ✓");
+        loadPlayers();
+      };
 
       // Send only the announcement (on top of the last loaded settings) so it
       // doesn't push other half-edited fields.

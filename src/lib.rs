@@ -60,6 +60,10 @@ const LEADERBOARD_KEY: &str = "leaderboard:scores";
 /// Prefix for the pseudo→token reservation keys (`name:{normalised}` = token),
 /// which make each pseudo unique and bound to one token.
 const NAME_KEY_PREFIX: &str = "name:";
+/// Redis hash `{x}:{y}` → current owner of each painted pixel.
+const OWNERS_KEY: &str = "owners";
+/// Redis sorted set: current number of pixels each player owns (territory).
+const OWNERSHIP_KEY: &str = "ownership:counts";
 
 // Defaults for the runtime-tunable `Settings`. The live values are held in
 // `AppState` (and Redis); these are only the starting point.
@@ -491,6 +495,10 @@ pub struct AppState {
     redis: Option<redis::aio::ConnectionManager>,
     fallback: Arc<Mutex<Vec<u8>>>,
     fallback_lb: Arc<Mutex<HashMap<String, u64>>>,
+    /// Current owner of each painted pixel (fallback when no Redis).
+    owners: Arc<Mutex<HashMap<(u16, u16), String>>>,
+    /// Current pixels-owned count per player — territory (fallback, no Redis).
+    ownership: Arc<Mutex<HashMap<String, u64>>>,
     tx: broadcast::Sender<String>,
     /// Pending pixel updates, flushed to SSE clients on a tick (coalesced).
     buffer: PixelBuffer,
@@ -598,6 +606,8 @@ impl AppState {
             redis,
             fallback: Arc::new(Mutex::new(blank_canvas(fw, fh))),
             fallback_lb: Arc::new(Mutex::new(HashMap::new())),
+            owners: Arc::new(Mutex::new(HashMap::new())),
+            ownership: Arc::new(Mutex::new(HashMap::new())),
             tx,
             buffer,
             tokens: Arc::new(Mutex::new(HashMap::new())),
@@ -691,6 +701,138 @@ impl AppState {
         entries
     }
 
+    /// Record that `name` now owns pixel `(x, y)`. Unlike the cumulative
+    /// leaderboard, ownership is transferred: the previous owner's territory
+    /// count is decremented and the new owner's incremented (repainting your
+    /// own pixel is a no-op).
+    async fn update_ownership(&self, x: usize, y: usize, name: &str) {
+        let field = format!("{x}:{y}");
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let prev: Option<String> = redis::cmd("HGET")
+                .arg(OWNERS_KEY)
+                .arg(&field)
+                .query_async(&mut conn)
+                .await
+                .ok()
+                .flatten();
+            if prev.as_deref() == Some(name) {
+                return;
+            }
+            let _ = redis::cmd("HSET")
+                .arg(OWNERS_KEY)
+                .arg(&field)
+                .arg(name)
+                .query_async::<i64>(&mut conn)
+                .await;
+            if let Some(prev) = prev {
+                let newscore: f64 = redis::cmd("ZINCRBY")
+                    .arg(OWNERSHIP_KEY)
+                    .arg(-1i64)
+                    .arg(&prev)
+                    .query_async(&mut conn)
+                    .await
+                    .unwrap_or(0.0);
+                if newscore <= 0.0 {
+                    let _ = redis::cmd("ZREM")
+                        .arg(OWNERSHIP_KEY)
+                        .arg(&prev)
+                        .query_async::<i64>(&mut conn)
+                        .await;
+                }
+            }
+            let _ = redis::cmd("ZINCRBY")
+                .arg(OWNERSHIP_KEY)
+                .arg(1i64)
+                .arg(name)
+                .query_async::<f64>(&mut conn)
+                .await;
+        } else {
+            let key = (x as u16, y as u16);
+            let prev = {
+                let mut owners = self.owners.lock().unwrap();
+                let prev = owners.get(&key).cloned();
+                if prev.as_deref() == Some(name) {
+                    return;
+                }
+                owners.insert(key, name.to_string());
+                prev
+            };
+            let mut counts = self.ownership.lock().unwrap();
+            if let Some(prev) = prev {
+                if let Some(c) = counts.get_mut(&prev) {
+                    *c = c.saturating_sub(1);
+                    if *c == 0 {
+                        counts.remove(&prev);
+                    }
+                }
+            }
+            *counts.entry(name.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    /// Territory standings: how many pixels each player currently owns and what
+    /// share of the whole canvas that represents.
+    pub async fn ownership(&self) -> OwnershipResponse {
+        let total = {
+            let s = self.settings.lock().unwrap();
+            (s.width * s.height) as u64
+        };
+        let raw: Vec<(String, u64)> = if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            redis::cmd("ZREVRANGE")
+                .arg(OWNERSHIP_KEY)
+                .arg(0i64)
+                .arg(19i64)
+                .arg("WITHSCORES")
+                .query_async::<Vec<String>>(&mut conn)
+                .await
+                .unwrap_or_default()
+                .chunks(2)
+                .filter_map(|c| match c {
+                    [name, score] => {
+                        Some((name.clone(), score.parse::<f64>().unwrap_or(0.0) as u64))
+                    }
+                    _ => None,
+                })
+                .collect()
+        } else {
+            let counts = self.ownership.lock().unwrap();
+            let mut v: Vec<(String, u64)> = counts.iter().map(|(n, &c)| (n.clone(), c)).collect();
+            v.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+            v.truncate(20);
+            v
+        };
+        let entries = raw
+            .into_iter()
+            .map(|(name, count)| OwnershipEntry {
+                name,
+                count,
+                percent: if total > 0 {
+                    (count as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                },
+            })
+            .collect();
+        OwnershipResponse { total, entries }
+    }
+
+    /// Wipe all ownership tracking (used on canvas reset/resize).
+    async fn clear_ownership(&self) {
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let _ = redis::cmd("DEL")
+                .arg(OWNERS_KEY)
+                .arg(OWNERSHIP_KEY)
+                .query_async::<i64>(&mut conn)
+                .await;
+        } else {
+            self.owners.lock().unwrap().clear();
+            self.ownership.lock().unwrap().clear();
+        }
+    }
+
     /// Paint a single pixel. `player` (if provided and non-empty after
     /// sanitisation) is credited in the leaderboard. Returns an error if the
     /// coordinates or colour are invalid. With Redis the update is published to
@@ -770,11 +912,12 @@ impl AppState {
             *self.pixels_painted.lock().unwrap() += 1;
         }
 
-        // Update leaderboard and push fresh top-10 to connected SSE clients.
+        // Update leaderboard + territory, then push fresh top-10 to SSE clients.
         if let Some(name) = player {
             let safe = sanitize_name(name);
             if !safe.is_empty() {
                 self.increment_score(&safe).await;
+                self.update_ownership(x, y, &safe).await;
                 let lb = self.leaderboard().await;
                 if let Ok(lb_json) = serde_json::to_string(&lb) {
                     let _ = self.tx.send(format!("lb:{lb_json}"));
@@ -1118,6 +1261,8 @@ impl AppState {
                 .await;
         }
         *self.fallback.lock().unwrap() = blank.into_bytes();
+        // A blank canvas owns nothing.
+        self.clear_ownership().await;
         // Sentinel understood by the client as "wipe + resync at current size".
         let _ = self.tx.send(r#"{"clear":true}"#.to_string());
     }
@@ -1153,18 +1298,102 @@ impl AppState {
                 .arg(name)
                 .query_async::<i64>(&mut conn)
                 .await;
+            let _ = redis::cmd("ZREM")
+                .arg(OWNERSHIP_KEY)
+                .arg(name)
+                .query_async::<i64>(&mut conn)
+                .await;
         } else {
             let token = self.names.lock().unwrap().remove(&key);
             if let Some(token) = token {
                 self.tokens.lock().unwrap().remove(&token);
             }
             self.fallback_lb.lock().unwrap().remove(name);
+            self.ownership.lock().unwrap().remove(name);
         }
         // Push the refreshed leaderboard to every connected client.
         let lb = self.leaderboard().await;
         if let Ok(json) = serde_json::to_string(&lb) {
             let _ = self.tx.send(format!("lb:{json}"));
         }
+    }
+
+    /// Revoke every token that isn't properly bound to a pseudo — i.e. legacy
+    /// tokens from before the pseudo binding (whose value is empty or not backed
+    /// by a matching `name:` reservation). Returns how many were revoked.
+    pub async fn revoke_unbound_tokens(&self) -> u64 {
+        let mut revoked = 0u64;
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let mut cursor = String::from("0");
+            loop {
+                let (next, keys): (String, Vec<String>) = redis::cmd("SCAN")
+                    .arg(&cursor)
+                    .arg("MATCH")
+                    .arg("token:*")
+                    .arg("COUNT")
+                    .arg(200)
+                    .query_async(&mut conn)
+                    .await
+                    .unwrap_or_else(|_| ("0".into(), Vec::new()));
+                for key in &keys {
+                    let tok = key.strip_prefix("token:").unwrap_or("");
+                    let pseudo: Option<String> = redis::cmd("GET")
+                        .arg(key)
+                        .query_async(&mut conn)
+                        .await
+                        .ok()
+                        .flatten();
+                    let bound = match pseudo.as_deref() {
+                        Some(p) if !p.is_empty() => {
+                            let owner: Option<String> = redis::cmd("GET")
+                                .arg(format!("{NAME_KEY_PREFIX}{}", p.to_lowercase()))
+                                .query_async(&mut conn)
+                                .await
+                                .ok()
+                                .flatten();
+                            owner.as_deref() == Some(tok)
+                        }
+                        _ => false,
+                    };
+                    if !bound {
+                        let _ = redis::cmd("DEL")
+                            .arg(key)
+                            .query_async::<i64>(&mut conn)
+                            .await;
+                        revoked += 1;
+                    }
+                }
+                if next == "0" {
+                    break;
+                }
+                cursor = next;
+            }
+        } else {
+            let snapshot: Vec<(String, String)> = self
+                .tokens
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(t, n)| (t.clone(), n.clone()))
+                .collect();
+            let mut to_remove = Vec::new();
+            {
+                let names = self.names.lock().unwrap();
+                for (tok, name) in &snapshot {
+                    let bound = !name.is_empty() && names.get(&name.to_lowercase()) == Some(tok);
+                    if !bound {
+                        to_remove.push(tok.clone());
+                    }
+                }
+            }
+            let mut tokens = self.tokens.lock().unwrap();
+            for tok in &to_remove {
+                tokens.remove(tok);
+            }
+            revoked = to_remove.len() as u64;
+        }
+        revoked
     }
 
     /// Whether an admin password is configured (admin is disabled otherwise).
@@ -1305,6 +1534,22 @@ struct CanvasResponse {
 pub struct LeaderboardEntry {
     name: String,
     count: u64,
+}
+
+/// One player's current territory: pixels owned and their share of the canvas.
+#[derive(Serialize)]
+pub struct OwnershipEntry {
+    name: String,
+    count: u64,
+    percent: f64,
+}
+
+/// Territory standings for `/api/ownership`.
+#[derive(Serialize)]
+pub struct OwnershipResponse {
+    /// Total pixels on the canvas (`width * height`).
+    total: u64,
+    entries: Vec<OwnershipEntry>,
 }
 
 #[derive(Deserialize)]
@@ -1619,8 +1864,26 @@ async fn admin_delete_player(
     Json(OkResponse { ok: true }).into_response()
 }
 
+#[derive(Serialize)]
+struct RevokedResponse {
+    ok: bool,
+    revoked: u64,
+}
+
+async fn admin_revoke_unbound(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e;
+    }
+    let revoked = state.revoke_unbound_tokens().await;
+    Json(RevokedResponse { ok: true, revoked }).into_response()
+}
+
 async fn get_leaderboard(State(state): State<AppState>) -> Json<Vec<LeaderboardEntry>> {
     Json(state.leaderboard().await)
+}
+
+async fn get_ownership(State(state): State<AppState>) -> Json<OwnershipResponse> {
+    Json(state.ownership().await)
 }
 
 /// Build the application router.
@@ -1634,6 +1897,7 @@ pub fn app(state: AppState) -> Router {
         .route("/api/pixel", post(put_pixel))
         .route("/api/events", get(sse_events))
         .route("/api/leaderboard", get(get_leaderboard))
+        .route("/api/ownership", get(get_ownership))
         .route("/admin", get(admin_page))
         .route("/admin/login", post(admin_login))
         .route("/admin/logout", post(admin_logout))
@@ -1641,6 +1905,10 @@ pub fn app(state: AppState) -> Router {
         .route("/admin/api/settings", put(admin_update_settings))
         .route("/admin/api/canvas/clear", post(admin_clear_canvas))
         .route("/admin/api/players/delete", post(admin_delete_player))
+        .route(
+            "/admin/api/tokens/revoke-unbound",
+            post(admin_revoke_unbound),
+        )
         .with_state(state)
 }
 
@@ -1953,6 +2221,68 @@ mod tests {
         assert!(!state.leaderboard().await.iter().any(|e| e.name == "Bob"));
         assert_eq!(state.player_for_token(&token).await, None);
         assert!(state.register_player("Bob").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn ownership_transfers_on_overwrite() {
+        let state = AppState::new(None).await;
+        let owned = |o: &OwnershipResponse, who: &str| {
+            o.entries.iter().find(|e| e.name == who).map(|e| e.count)
+        };
+
+        // Alice paints two pixels → owns 2.
+        state
+            .set_pixel(0, 0, "ff0000", Some("Alice"))
+            .await
+            .unwrap();
+        state
+            .set_pixel(1, 0, "ff0000", Some("Alice"))
+            .await
+            .unwrap();
+        assert_eq!(owned(&state.ownership().await, "Alice"), Some(2));
+
+        // Bob overwrites one of Alice's pixels → territory transfers.
+        state.set_pixel(0, 0, "00ff00", Some("Bob")).await.unwrap();
+        let o = state.ownership().await;
+        assert_eq!(owned(&o, "Alice"), Some(1));
+        assert_eq!(owned(&o, "Bob"), Some(1));
+
+        // Repainting your own pixel doesn't change the counts.
+        state
+            .set_pixel(1, 0, "0000ff", Some("Alice"))
+            .await
+            .unwrap();
+        assert_eq!(owned(&state.ownership().await, "Alice"), Some(1));
+    }
+
+    #[tokio::test]
+    async fn revoke_unbound_tokens_removes_legacy_tokens() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.register_delay_secs = 0;
+        state.update_settings(s).await;
+
+        // Legacy tokens: one with an empty value, one valued "1" (pre-binding).
+        state.store_token("empty").await;
+        state
+            .tokens
+            .lock()
+            .unwrap()
+            .insert("one".into(), "1".into());
+        // A properly registered player (bound to a name reservation).
+        let (good, _) = state.register_player("Real").await.unwrap();
+
+        let revoked = state.revoke_unbound_tokens().await;
+        assert_eq!(revoked, 2);
+        assert!(matches!(
+            state.authorize("empty").await,
+            Err(ApiError::Unauthorized)
+        ));
+        assert!(matches!(
+            state.authorize("one").await,
+            Err(ApiError::Unauthorized)
+        ));
+        assert!(state.authorize(&good).await.is_ok());
     }
 
     #[tokio::test]
