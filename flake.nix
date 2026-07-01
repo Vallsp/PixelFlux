@@ -120,7 +120,11 @@
           ];
 
           shellHook = ''
-            echo "Pixelflux dev shell ready — run 'task' to list every available task."
+            # stderr, not stdout: tools that shell out to `nix develop -c <cmd>` and
+            # parse its stdout (e.g. Swatinem/rust-cache probing the toolchain via
+            # `rustc -vV`) would otherwise capture this banner instead of the
+            # command's real output.
+            echo "Pixelflux dev shell ready — run 'task' to list every available task." >&2
           '';
         };
 
