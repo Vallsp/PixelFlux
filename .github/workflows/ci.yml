@@ -13,6 +13,44 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # paths-filter needs this to list changed files via the API on PRs
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          base: ${{ github.ref }}
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'Taskfile.yml'
+              - '.github/workflows/ci.yml'
+            docs:
+              - 'docs/**'
+              - 'api/**'
+              - '**/*.md'
+              - '.vale.ini'
+              - '.vale/**'
+              - 'lychee.toml'
+              - 'flake.nix'
+              - 'flake.lock'
+              - 'Taskfile.yml'
+              - '.github/workflows/ci.yml'
+
   quality:
     name: Lint, format & secrets
     runs-on: ubuntu-latest
@@ -22,6 +60,9 @@ jobs:
           fetch-depth: 0 # gitleaks needs full history
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cmd-format: "nix develop -c {0}" # cargo only exists inside `nix develop` here
       - name: Generate lockfile
         run: nix develop -c task lock
       - name: Lint & format check
@@ -31,11 +72,16 @@ jobs:
 
   test:
     name: Build & tests
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cmd-format: "nix develop -c {0}"
       - name: Generate lockfile
         run: nix develop -c task lock
       - name: Build
@@ -48,7 +94,8 @@ jobs:
   container:
     name: Container build, scan & publish
     runs-on: ubuntu-latest
-    needs: [quality, test]
+    needs: [changes, quality, test]
+    if: success() && needs.changes.outputs.code == 'true'
     permissions:
       contents: read
       packages: write # push the image to GHCR (job-scoped; other jobs stay read-only)
@@ -106,6 +153,8 @@ jobs:
 
   docs:
     name: Documentation (Vale + links)
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -125,7 +174,7 @@ jobs:
     name: Publish docs to GitHub Pages
     runs-on: ubuntu-latest
     needs: [docs]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: needs.docs.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       pages: write # deploy to Pages (job-scoped; other jobs stay read-only)
       id-token: write # OIDC token the deploy-pages action verifies
