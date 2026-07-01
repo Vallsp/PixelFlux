@@ -55,6 +55,8 @@ const STATS_TOKENS_KEY: &str = "stats:tokens";
 const ADMIN_SESSION_PREFIX: &str = "admin:session:";
 /// Admin session lifetime.
 const ADMIN_SESSION_TTL_SECS: u64 = 3_600;
+/// Sorted-set key in Redis for per-player pixel counts.
+const LEADERBOARD_KEY: &str = "leaderboard:scores";
 
 // Defaults for the runtime-tunable `Settings`. The live values are held in
 // `AppState` (and Redis); these are only the starting point.
@@ -302,6 +304,17 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// Keep only alphanumeric characters, spaces, underscores, and hyphens;
+/// trim whitespace; cap at 20 code-points.
+fn sanitize_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '_' | '-'))
+        .take(20)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn blank_canvas(width: usize, height: usize) -> Vec<u8> {
     // White background: "ffffff" per pixel.
     b"ffffff".repeat(width * height)
@@ -465,6 +478,7 @@ fn spawn_config_subscriber(
 pub struct AppState {
     redis: Option<redis::aio::ConnectionManager>,
     fallback: Arc<Mutex<Vec<u8>>>,
+    fallback_lb: Arc<Mutex<HashMap<String, u64>>>,
     tx: broadcast::Sender<String>,
     /// Pending pixel updates, flushed to SSE clients on a tick (coalesced).
     buffer: PixelBuffer,
@@ -569,6 +583,7 @@ impl AppState {
         Self {
             redis,
             fallback: Arc::new(Mutex::new(blank_canvas(fw, fh))),
+            fallback_lb: Arc::new(Mutex::new(HashMap::new())),
             tx,
             buffer,
             tokens: Arc::new(Mutex::new(HashSet::new())),
@@ -608,10 +623,70 @@ impl AppState {
         String::from_utf8(self.fallback.lock().unwrap().clone()).unwrap()
     }
 
-    /// Paint a single pixel. Returns an error if the coordinates or colour are
-    /// invalid. With Redis the update is published to every instance; otherwise
-    /// it is broadcast in-process.
-    pub async fn set_pixel(&self, x: usize, y: usize, color: &str) -> Result<(), PixelError> {
+    /// Increment the pixel count for `name` in the leaderboard sorted set.
+    async fn increment_score(&self, name: &str) {
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            let _ = redis::cmd("ZINCRBY")
+                .arg(LEADERBOARD_KEY)
+                .arg(1i64)
+                .arg(name)
+                .query_async::<f64>(&mut conn)
+                .await;
+        } else {
+            let mut lb = self.fallback_lb.lock().unwrap();
+            *lb.entry(name.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    /// Return the top-10 players sorted by pixel count (highest first).
+    pub async fn leaderboard(&self) -> Vec<LeaderboardEntry> {
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            if let Ok(pairs) = redis::cmd("ZREVRANGE")
+                .arg(LEADERBOARD_KEY)
+                .arg(0i64)
+                .arg(9i64)
+                .arg("WITHSCORES")
+                .query_async::<Vec<String>>(&mut conn)
+                .await
+            {
+                return pairs
+                    .chunks(2)
+                    .filter_map(|chunk| match chunk {
+                        [name, score] => Some(LeaderboardEntry {
+                            name: name.clone(),
+                            count: score.parse::<f64>().unwrap_or(0.0) as u64,
+                        }),
+                        _ => None,
+                    })
+                    .collect();
+            }
+        }
+        let lb = self.fallback_lb.lock().unwrap();
+        let mut entries: Vec<LeaderboardEntry> = lb
+            .iter()
+            .map(|(name, &count)| LeaderboardEntry {
+                name: name.clone(),
+                count,
+            })
+            .collect();
+        entries.sort_by_key(|e| std::cmp::Reverse(e.count));
+        entries.truncate(10);
+        entries
+    }
+
+    /// Paint a single pixel. `player` (if provided and non-empty after
+    /// sanitisation) is credited in the leaderboard. Returns an error if the
+    /// coordinates or colour are invalid. With Redis the update is published to
+    /// every instance; the leaderboard snapshot is broadcast in-process over SSE.
+    pub async fn set_pixel(
+        &self,
+        x: usize,
+        y: usize,
+        color: &str,
+        player: Option<&str>,
+    ) -> Result<(), PixelError> {
         let normalized =
             normalize_color(color).ok_or_else(|| PixelError::InvalidColor(color.to_string()))?;
         // Read dimensions and (if enforced) check palette membership in one lock,
@@ -660,20 +735,38 @@ impl AppState {
                     .arg(STATS_PIXELS_KEY)
                     .query_async::<i64>(&mut conn)
                     .await;
-                return Ok(());
+            } else {
+                let mut fb = self.fallback.lock().unwrap();
+                fb[offset..offset + BYTES_PER_PIXEL].copy_from_slice(color.as_bytes());
+                // Feed the coalescing buffer; the flusher batches and broadcasts it.
+                self.buffer
+                    .lock()
+                    .unwrap()
+                    .insert((x as u16, y as u16), color.clone());
+                *self.pixels_painted.lock().unwrap() += 1;
+            }
+        } else {
+            let mut fb = self.fallback.lock().unwrap();
+            fb[offset..offset + BYTES_PER_PIXEL].copy_from_slice(color.as_bytes());
+            self.buffer
+                .lock()
+                .unwrap()
+                .insert((x as u16, y as u16), color.clone());
+            *self.pixels_painted.lock().unwrap() += 1;
+        }
+
+        // Update leaderboard and push fresh top-10 to connected SSE clients.
+        if let Some(name) = player {
+            let safe = sanitize_name(name);
+            if !safe.is_empty() {
+                self.increment_score(&safe).await;
+                let lb = self.leaderboard().await;
+                if let Ok(lb_json) = serde_json::to_string(&lb) {
+                    let _ = self.tx.send(format!("lb:{lb_json}"));
+                }
             }
         }
 
-        {
-            let mut fb = self.fallback.lock().unwrap();
-            fb[offset..offset + BYTES_PER_PIXEL].copy_from_slice(color.as_bytes());
-        }
-        // Feed the coalescing buffer; the flusher batches and broadcasts it.
-        self.buffer
-            .lock()
-            .unwrap()
-            .insert((x as u16, y as u16), color);
-        *self.pixels_painted.lock().unwrap() += 1;
         Ok(())
     }
 
@@ -988,10 +1081,15 @@ impl AppState {
         self.tx.subscribe()
     }
 
-    /// A stream of batched live pixel events for SSE subscribers (one event per
-    /// flush tick, each carrying a JSON array of updates).
+    /// A stream of live events for SSE subscribers.
+    /// Pixel batches → default "message" SSE type (one JSON array per tick).
+    /// Leaderboard snapshots → "leaderboard" named SSE event.
     fn events(&self) -> impl Stream<Item = Result<Event, Infallible>> {
         BroadcastStream::new(self.tx.subscribe()).filter_map(|msg| match msg {
+            Ok(json) if json.starts_with("lb:") => {
+                let data = json["lb:".len()..].to_string();
+                Some(Ok(Event::default().event("leaderboard").data(data)))
+            }
             Ok(json) => Some(Ok(Event::default().data(json))),
             Err(_) => None, // lagged: client will resync via full fetch
         })
@@ -1046,12 +1144,19 @@ struct CanvasResponse {
     pixels: String,
 }
 
+#[derive(Serialize)]
+pub struct LeaderboardEntry {
+    name: String,
+    count: u64,
+}
+
 #[derive(Deserialize)]
 struct PixelRequest {
     x: usize,
     y: usize,
     /// RGB colour as 6 hex digits (`rrggbb`), with or without a leading `#`.
     color: String,
+    player: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1133,7 +1238,9 @@ async fn put_pixel(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     state.authorize(token).await?;
-    state.set_pixel(req.x, req.y, &req.color).await?;
+    state
+        .set_pixel(req.x, req.y, &req.color, req.player.as_deref())
+        .await?;
     Ok(Json(PixelResponse { ok: true }))
 }
 
@@ -1311,6 +1418,10 @@ async fn admin_clear_canvas(State(state): State<AppState>, headers: HeaderMap) -
     Json(OkResponse { ok: true }).into_response()
 }
 
+async fn get_leaderboard(State(state): State<AppState>) -> Json<Vec<LeaderboardEntry>> {
+    Json(state.leaderboard().await)
+}
+
 /// Build the application router.
 pub fn app(state: AppState) -> Router {
     Router::new()
@@ -1321,6 +1432,7 @@ pub fn app(state: AppState) -> Router {
         .route("/register", post(register))
         .route("/api/pixel", post(put_pixel))
         .route("/api/events", get(sse_events))
+        .route("/api/leaderboard", get(get_leaderboard))
         .route("/admin", get(admin_page))
         .route("/admin/login", post(admin_login))
         .route("/admin/logout", post(admin_logout))
@@ -1355,8 +1467,8 @@ mod tests {
     #[tokio::test]
     async fn set_pixel_updates_the_canvas() {
         let state = AppState::new(None).await;
-        assert!(state.set_pixel(1, 0, "ff0000").await.is_ok()); // pixel 1 -> red
-        assert!(state.set_pixel(0, 1, "00ff00").await.is_ok()); // row below -> green
+        assert!(state.set_pixel(1, 0, "ff0000", None).await.is_ok()); // pixel 1 -> red
+        assert!(state.set_pixel(0, 1, "00ff00", None).await.is_ok()); // row below -> green
 
         let canvas = state.canvas().await;
         assert_eq!(&canvas[BYTES_PER_PIXEL..BYTES_PER_PIXEL * 2], "ff0000");
@@ -1368,13 +1480,13 @@ mod tests {
     async fn set_pixel_normalises_and_rejects() {
         let state = AppState::new(None).await;
         // A leading '#' and uppercase are accepted and normalised.
-        assert!(state.set_pixel(0, 0, "#AABBCC").await.is_ok());
+        assert!(state.set_pixel(0, 0, "#AABBCC", None).await.is_ok());
         assert_eq!(&state.canvas().await[0..BYTES_PER_PIXEL], "aabbcc");
         // Invalid inputs are rejected.
-        assert!(state.set_pixel(WIDTH, 0, "ffffff").await.is_err()); // x out of bounds
-        assert!(state.set_pixel(0, HEIGHT, "ffffff").await.is_err()); // y out of bounds
-        assert!(state.set_pixel(0, 0, "12345").await.is_err()); // wrong length
-        assert!(state.set_pixel(0, 0, "gggggg").await.is_err()); // non-hex
+        assert!(state.set_pixel(WIDTH, 0, "ffffff", None).await.is_err()); // x out of bounds
+        assert!(state.set_pixel(0, HEIGHT, "ffffff", None).await.is_err()); // y out of bounds
+        assert!(state.set_pixel(0, 0, "12345", None).await.is_err()); // wrong length
+        assert!(state.set_pixel(0, 0, "gggggg", None).await.is_err()); // non-hex
     }
 
     #[test]
@@ -1405,7 +1517,7 @@ mod tests {
         std::env::set_var("SSE_COALESCE_MS", "5");
         let state = AppState::new(None).await;
         let mut rx = state.subscribe();
-        assert!(state.set_pixel(3, 4, "e50000").await.is_ok());
+        assert!(state.set_pixel(3, 4, "e50000", None).await.is_ok());
         // Updates are coalesced, so the event is a JSON array delivered a tick later.
         let msg = tokio::time::timeout(Duration::from_secs(2), rx.recv())
             .await
@@ -1505,8 +1617,8 @@ mod tests {
         assert!(canvas.chars().all(|c| c == 'f')); // fresh blank at the new size
 
         // The new bounds are enforced.
-        assert!(state.set_pixel(63, 31, "ff0000").await.is_ok());
-        assert!(state.set_pixel(64, 0, "ff0000").await.is_err());
+        assert!(state.set_pixel(63, 31, "ff0000", None).await.is_ok());
+        assert!(state.set_pixel(64, 0, "ff0000", None).await.is_err());
     }
 
     #[tokio::test]
@@ -1552,11 +1664,11 @@ mod tests {
         state.update_settings(s).await;
 
         // Palette colours are accepted (case/`#` are normalised before the check).
-        assert!(state.set_pixel(0, 0, "ff0000").await.is_ok());
-        assert!(state.set_pixel(1, 0, "#00FF00").await.is_ok());
+        assert!(state.set_pixel(0, 0, "ff0000", None).await.is_ok());
+        assert!(state.set_pixel(1, 0, "#00FF00", None).await.is_ok());
         // Anything else is rejected at the API level, not just hidden in the UI.
         assert!(matches!(
-            state.set_pixel(2, 0, "0000ff").await,
+            state.set_pixel(2, 0, "0000ff", None).await,
             Err(PixelError::NotInPalette(_))
         ));
 
@@ -1564,7 +1676,7 @@ mod tests {
         let mut s = state.settings();
         s.enforce_palette = false;
         state.update_settings(s).await;
-        assert!(state.set_pixel(2, 0, "0000ff").await.is_ok());
+        assert!(state.set_pixel(2, 0, "0000ff", None).await.is_ok());
     }
 
     #[tokio::test]
@@ -1683,5 +1795,53 @@ mod tests {
         let body = body_string(response).await;
         assert!(body.contains(r#""width":200"#), "got: {body}");
         assert!(body.contains(r#""height":200"#), "got: {body}");
+    }
+
+    #[tokio::test]
+    async fn leaderboard_tracks_pixel_counts() {
+        let state = AppState::new(None).await;
+        assert!(state.set_pixel(0, 0, "ff0000", Some("Alice")).await.is_ok());
+        assert!(state.set_pixel(1, 0, "00ff00", Some("Bob")).await.is_ok());
+        assert!(state.set_pixel(2, 0, "0000ff", Some("Alice")).await.is_ok());
+
+        let lb = state.leaderboard().await;
+        assert_eq!(lb[0].name, "Alice");
+        assert_eq!(lb[0].count, 2);
+        assert_eq!(lb[1].name, "Bob");
+        assert_eq!(lb[1].count, 1);
+    }
+
+    #[tokio::test]
+    async fn leaderboard_sanitizes_names() {
+        let state = AppState::new(None).await;
+        assert!(state
+            .set_pixel(0, 0, "ff0000", Some("<script>alert(1)</script>"))
+            .await
+            .is_ok());
+        let lb = state.leaderboard().await;
+        assert!(!lb[0].name.contains('<'));
+        assert!(!lb[0].name.contains('>'));
+        assert!(!lb[0].name.contains('/'));
+    }
+
+    #[tokio::test]
+    async fn leaderboard_endpoint_returns_player() {
+        let state = AppState::new(None).await;
+        assert!(state
+            .set_pixel(0, 0, "ff0000", Some("TestPlayer"))
+            .await
+            .is_ok());
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/leaderboard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_string(response).await;
+        assert!(body.contains("TestPlayer"), "got: {body}");
     }
 }

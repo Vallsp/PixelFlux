@@ -21,7 +21,7 @@ async fn canvas_is_shared_through_redis() {
 
     // Paint a pixel through one server instance...
     let writer = AppState::new(Some(url.clone())).await;
-    assert!(writer.set_pixel(2, 3, "0af10c").await.is_ok());
+    assert!(writer.set_pixel(2, 3, "0af10c", None).await.is_ok());
     let offset = (3 * WIDTH + 2) * 6; // 6 hex chars per pixel
 
     // ...and read it back through a *separate* instance: the pixel must be
@@ -55,7 +55,7 @@ async fn pixel_event_is_fanned_out_across_instances() {
     let mut events = watcher.subscribe();
 
     // Paint on the *painter* instance.
-    painter.set_pixel(5, 6, "123456").await.expect("paint");
+    painter.set_pixel(5, 6, "123456", None).await.expect("paint");
 
     // The *watcher* must receive the event via Redis pub/sub fan-out. Updates
     // are coalesced into a batched array and flushed on a tick (default 16ms).
