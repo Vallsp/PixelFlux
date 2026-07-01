@@ -364,6 +364,28 @@ paths:
           description: Canvas wiped; a clear event is broadcast to all clients
         "401":
           description: Not authenticated
+  /admin/api/players/delete:
+    post:
+      summary: Remove a player
+      description: >-
+        Revoke the token bound to the given pseudo, free the pseudo reservation,
+        and drop the player from the leaderboard. The refreshed top-10 is pushed
+        to all clients.
+      operationId: adminDeletePlayer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: Alice }
+      responses:
+        "200":
+          description: Player removed (idempotent if the pseudo didn't exist)
+        "401":
+          description: Not authenticated
 components:
   schemas:
     Settings:

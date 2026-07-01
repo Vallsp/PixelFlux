@@ -42,7 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bound to their token server-side, so the leaderboard credit is derived from
   the token (not the paint request) and can't be spoofed. `POST /register` takes
   the pseudo (409 if taken); `GET /api/leaderboard` returns the top-10, also
-  pushed live as a named `leaderboard` SSE event.
+  pushed live as a named `leaderboard` SSE event. Admins can **remove a player**
+  (revokes the token, frees the pseudo, drops them from the leaderboard).
 - Documentation: README with diagrams, CONTRIBUTING, per-directory READMEs,
   AGENTS.md, and Architecture Decision Records.
 

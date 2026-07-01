@@ -212,6 +212,31 @@
         border-color: #2f6f3a;
         color: #cdebd3;
       }
+      .players {
+        list-style: none;
+        margin: 0 0 0.8rem;
+        padding: 0;
+      }
+      .players li {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.35rem 0.5rem;
+        border: 1px solid #2a2f3a;
+        border-radius: 8px;
+        background: #0f1115;
+        margin-bottom: 6px;
+        font-size: 0.9rem;
+      }
+      .players .pl-count {
+        color: #9aa0aa;
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+      }
+      .players button {
+        padding: 0.1rem 0.5rem;
+        font-size: 0.9rem;
+      }
       #toast {
         position: fixed;
         bottom: 1rem;
@@ -362,6 +387,17 @@
       <p class="hint">Affiché à tous les visiteurs, indépendamment de la maintenance. « Envoyer » applique uniquement l'annonce.</p>
     </div>
 
+    <div class="card hidden" id="dash-players">
+      <h2>Joueurs</h2>
+      <p class="hint">Top-10 du classement. « × » révoque le token du joueur, libère son pseudo et le retire du classement.</p>
+      <ol id="players-list" class="players"></ol>
+      <label for="player-del-name">Supprimer par pseudo exact</label>
+      <div class="row" style="margin-top: 0.3rem">
+        <input type="text" id="player-del-name" maxlength="20" placeholder="Pseudo…" />
+        <button class="danger" id="player-del-btn">Supprimer</button>
+      </div>
+    </div>
+
     <div class="card hidden" id="dash-actions">
       <div class="row" style="margin-top: 0">
         <button class="primary" id="savebtn">Enregistrer tous les réglages</button>
@@ -406,6 +442,7 @@
         "dash-settings",
         "dash-palette",
         "dash-comm",
+        "dash-players",
         "dash-actions",
       ];
       const DEFAULT_PALETTE = [
@@ -480,6 +517,7 @@
           return false;
         }
         renderState(await r.json());
+        loadPlayers();
         showDash(true);
         return true;
       }
@@ -494,6 +532,7 @@
           $("s-online").textContent = d.stats.online;
           $("s-pixels").textContent = d.stats.pixels_painted.toLocaleString();
           $("s-tokens").textContent = d.stats.tokens_issued.toLocaleString();
+          loadPlayers();
         }, 4000);
       }
       function stopRefresh() {
@@ -568,6 +607,61 @@
       $("palette-add").onclick = () =>
         $("palette-editor").appendChild(paletteItem("#ffffff"));
       $("palette-reset").onclick = () => renderPalette(DEFAULT_PALETTE);
+
+      // --- players / moderation ---
+      function renderPlayers(entries) {
+        const list = $("players-list");
+        list.innerHTML = "";
+        if (!entries.length) {
+          const li = document.createElement("li");
+          li.textContent = "Aucun joueur.";
+          list.appendChild(li);
+          return;
+        }
+        for (const { name, count } of entries) {
+          const li = document.createElement("li");
+          li.appendChild(document.createTextNode(name));
+          const c = document.createElement("span");
+          c.className = "pl-count";
+          c.textContent = count;
+          li.appendChild(c);
+          const del = document.createElement("button");
+          del.className = "danger";
+          del.textContent = "×";
+          del.title = "Supprimer " + name;
+          del.onclick = () => deletePlayer(name);
+          li.appendChild(del);
+          list.appendChild(li);
+        }
+      }
+      async function loadPlayers() {
+        try {
+          const r = await fetch("/api/leaderboard");
+          if (r.ok) renderPlayers(await r.json());
+        } catch (e) {
+          /* keep last */
+        }
+      }
+      async function deletePlayer(name) {
+        name = (name || "").trim();
+        if (!name) return;
+        if (!confirm('Supprimer le joueur "' + name + '" ? Son token sera révoqué.'))
+          return;
+        const r = await fetch("/admin/api/players/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+        if (!r.ok) return toast("Échec de la suppression", false);
+        toast("Joueur supprimé ✓");
+        $("player-del-name").value = "";
+        loadPlayers();
+      }
+      $("player-del-btn").onclick = () =>
+        deletePlayer($("player-del-name").value);
+      $("player-del-name").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") deletePlayer($("player-del-name").value);
+      });
 
       // Send only the announcement (on top of the last loaded settings) so it
       // doesn't push other half-edited fields.

@@ -1122,6 +1122,51 @@ impl AppState {
         let _ = self.tx.send(r#"{"clear":true}"#.to_string());
     }
 
+    /// Remove a player (admin): revoke the token bound to their pseudo, free the
+    /// pseudo reservation, and drop them from the leaderboard. The refreshed
+    /// top-10 is pushed to every client.
+    pub async fn delete_player(&self, name: &str) {
+        let key = name.trim().to_lowercase();
+        if key.is_empty() {
+            return;
+        }
+        if let Some(conn) = &self.redis {
+            let mut conn = conn.clone();
+            // Revoke the token bound to this pseudo (if any) so they can't keep
+            // painting under it.
+            if let Ok(Some(token)) = redis::cmd("GET")
+                .arg(format!("{NAME_KEY_PREFIX}{key}"))
+                .query_async::<Option<String>>(&mut conn)
+                .await
+            {
+                let _ = redis::cmd("DEL")
+                    .arg(format!("token:{token}"))
+                    .query_async::<i64>(&mut conn)
+                    .await;
+            }
+            let _ = redis::cmd("DEL")
+                .arg(format!("{NAME_KEY_PREFIX}{key}"))
+                .query_async::<i64>(&mut conn)
+                .await;
+            let _ = redis::cmd("ZREM")
+                .arg(LEADERBOARD_KEY)
+                .arg(name)
+                .query_async::<i64>(&mut conn)
+                .await;
+        } else {
+            let token = self.names.lock().unwrap().remove(&key);
+            if let Some(token) = token {
+                self.tokens.lock().unwrap().remove(&token);
+            }
+            self.fallback_lb.lock().unwrap().remove(name);
+        }
+        // Push the refreshed leaderboard to every connected client.
+        let lb = self.leaderboard().await;
+        if let Ok(json) = serde_json::to_string(&lb) {
+            let _ = self.tx.send(format!("lb:{json}"));
+        }
+    }
+
     /// Whether an admin password is configured (admin is disabled otherwise).
     pub fn admin_enabled(&self) -> bool {
         self.admin_password.is_some()
@@ -1556,6 +1601,24 @@ async fn admin_clear_canvas(State(state): State<AppState>, headers: HeaderMap) -
     Json(OkResponse { ok: true }).into_response()
 }
 
+/// A player to remove, identified by pseudo.
+#[derive(Deserialize)]
+struct DeletePlayerRequest {
+    name: String,
+}
+
+async fn admin_delete_player(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<DeletePlayerRequest>,
+) -> Response {
+    if let Err(e) = require_admin(&state, &headers).await {
+        return e;
+    }
+    state.delete_player(&req.name).await;
+    Json(OkResponse { ok: true }).into_response()
+}
+
 async fn get_leaderboard(State(state): State<AppState>) -> Json<Vec<LeaderboardEntry>> {
     Json(state.leaderboard().await)
 }
@@ -1577,6 +1640,7 @@ pub fn app(state: AppState) -> Router {
         .route("/admin/api/state", get(admin_get_state))
         .route("/admin/api/settings", put(admin_update_settings))
         .route("/admin/api/canvas/clear", post(admin_clear_canvas))
+        .route("/admin/api/players/delete", post(admin_delete_player))
         .with_state(state)
 }
 
@@ -1871,6 +1935,24 @@ mod tests {
         let state = AppState::new(None).await;
         assert_eq!(state.player_for_token("nope").await, None);
         assert_eq!(state.player_for_token("").await, None);
+    }
+
+    #[tokio::test]
+    async fn admin_can_delete_a_player() {
+        let state = AppState::new(None).await;
+        let mut s = state.settings();
+        s.register_delay_secs = 0;
+        state.update_settings(s).await;
+
+        let (token, _name) = state.register_player("Bob").await.unwrap();
+        state.set_pixel(0, 0, "ff0000", Some("Bob")).await.unwrap();
+        assert!(state.leaderboard().await.iter().any(|e| e.name == "Bob"));
+
+        state.delete_player("Bob").await;
+        // Gone from the leaderboard, token revoked, pseudo freed.
+        assert!(!state.leaderboard().await.iter().any(|e| e.name == "Bob"));
+        assert_eq!(state.player_for_token(&token).await, None);
+        assert!(state.register_player("Bob").await.is_ok());
     }
 
     #[tokio::test]

@@ -198,8 +198,10 @@ canvas into read-only **maintenance mode**, **reset** the canvas, edit the
 preset **colour palette** (optionally hide the native colour picker, or
 **enforce the palette server-side** so off-palette colours are rejected by the
 API too — not just hidden in the UI), set a custom **maintenance message**, post a
-site-wide **announcement banner**, **open or close registration**, and watch
-live stats (viewers online, pixels painted, tokens issued).
+site-wide **announcement banner**, **open or close registration**, **remove a
+player** (revokes their token, frees their pseudo, drops them from the
+leaderboard), and watch live stats (viewers online, pixels painted, tokens
+issued).
 
 The admin is **disabled unless** the `ADMIN_PASSWORD` environment variable is
 set, so it is off by default. Set it to turn it on:
